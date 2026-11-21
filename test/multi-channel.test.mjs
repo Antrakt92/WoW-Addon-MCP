@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, rmdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -84,6 +84,25 @@ test('default MCP exposes both channels with required per-call targets and no im
       { name: 'GetTime', channel: 'forever', version: retail.entry().clientVersion },
       { name: 'GetTime', channel: 'forever', version: '1.60.1.1' },
     ]) assert.equal((await client.callTool({ name: 'lookup_api', arguments: args })).isError, true, JSON.stringify(args));
+    for (const [name, args] of [
+      ['lookup_api', { name: ' ' }],
+      ['search_api', { query: ' ' }],
+      ['lookup_resource', { query: ' ' }],
+      ['search_resources', { query: ' ' }],
+      ['get_namespace', { namespace: ' ' }],
+      ['get_widget_methods', { name: ' ' }],
+      ['get_enum', { name: ' ' }],
+      ['get_event', { name: ' ' }],
+      ['lookup_runtime_resource', { name: ' ', kind: 'symbol' }],
+      ['lookup_engine_api', { name: ' ' }],
+      ['get_migration_guidance', { name: ' ' }],
+      ['search_api', { query: 'Unit', limit: 51 }],
+      ['search_resources', { query: 'Frame', offset: -1 }],
+      ['lookup_resource', { query: 'Frame', kind: 'invalid' }],
+    ]) {
+      const result = await client.callTool({ name, arguments: { ...args, channel: 'forever', version: 'latest' } });
+      assert.equal(result.isError, true, name + ': ' + JSON.stringify(args));
+    }
     assert.equal((await client.callTool({ name: 'get_api_history', arguments: { name: 'GetTime', channel: 'forever', from_version: retail.entry().version } })).isError, true);
 
     const target = { from_channel: 'retail', from_version: retail.entry().clientVersion, to_channel: 'forever', to_version: forever.entry().clientVersion };
@@ -145,6 +164,26 @@ test('local build report keeps exact matches, stale snapshots and missing client
       await rmdir(path.join(root, directory)).catch((error) => { if (error.code !== 'ENOENT') throw error; });
     }
     await rmdir(root);
+  }
+});
+
+test('CLI handles help and rejects malformed options without opening stdio', () => {
+  const run = (...args) => spawnSync(process.execPath, ['src/cli.mjs', ...args], { encoding: 'utf8', timeout: 5_000 });
+  const help = run('--help');
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /--channel retail\|forever/);
+  const supported = run('--channel=forever', '--dataset-info');
+  assert.equal(supported.status, 0, supported.stderr);
+  assert.equal(JSON.parse(supported.stdout).selected.clientVersion, forever.entry().clientVersion);
+  for (const args of [
+    ['--list-version'], ['forever'], ['--channel'], ['--channel', 'classic'],
+    ['--runtime-data'], ['--runtime-data='], ['--version', '--list-versions'],
+  ]) {
+    const result = run(...args);
+    assert.equal(result.error, undefined, args.join(' '));
+    assert.notEqual(result.status, 0, args.join(' '));
+    assert.equal(result.stdout, '');
+    assert.ok(result.stderr);
   }
 });
 
