@@ -1,4 +1,5 @@
 import { open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import * as z from 'zod/v4';
 import { matchesChannel } from './channels.mjs';
 
@@ -49,8 +50,8 @@ export const runtimeSchema = z.object({
 });
 
 export async function loadRuntimeData(file) {
-  if (!file) return null;
-  const handle = await open(file);
+  // Opening a POSIX FIFO for reading can wait for a writer before stat.
+  const handle = await open(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
   let bytes;
   try {
     const stats = await handle.stat();
@@ -84,7 +85,11 @@ export async function loadRuntimeData(file) {
 }
 
 export async function loadRuntimeSnapshots(files) {
-  const snapshots = await Promise.all((Array.isArray(files) ? files : files ? [files] : []).map(loadRuntimeData));
+  const paths = Array.isArray(files) ? [...files] : files ? [files] : [];
+  if (paths.some((file) => !file || (typeof file === 'string' && !file.trim()))) {
+    throw new TypeError('Each configured file requires a non-empty runtime snapshot path');
+  }
+  const snapshots = await Promise.all(paths.map(loadRuntimeData));
   const identities = new Set();
   for (const snapshot of snapshots) {
     const { channel, clientVersion, locale } = snapshot.source;

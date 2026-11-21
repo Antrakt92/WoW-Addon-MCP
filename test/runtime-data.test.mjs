@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import test from 'node:test';
-import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { readFile, mkdtemp, rmdir, unlink, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { lua, lauxlib, lualib, to_luastring, to_jsstring } from 'fengari';
 import { loadRuntimeData, loadRuntimeSnapshots, runtimeLookup, runtimeSchema } from '../src/runtime-data.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -22,6 +24,7 @@ function collect(request, version = '12.1.0', build = '69587', interfaceVersion 
       if name == "failed" then error("not available") end
       if name == "missing" then return nil end
       if name == "badFlag" then return "PRIVATE_CURRENT_SETTING", "1", 0, false, true, false, false end
+      if name == "longDefault" then return "PRIVATE_CURRENT_SETTING", string.rep("a", 65537), true, false, true, false, false end
       return "PRIVATE_CURRENT_SETTING", "1", true, false, true, false, false
     end }
     C_Texture = { GetAtlasInfo = function(name)
@@ -35,6 +38,8 @@ function collect(request, version = '12.1.0', build = '69587', interfaceVersion 
         topTexCoord=0.25, bottomTexCoord=1, tilesHorizontally=false, tilesVertically=true }
     end }
     EXAMPLE_LOCALIZED = "Count %d\n\"quoted\"\\path ä你好"
+    LIMIT_LOCALIZED = string.rep("a", 65536)
+    LONG_LOCALIZED = string.rep("a", 65537)
     RESTRICTED_LOCALIZED = "SIMULATED_RESTRICTED_TEXT"
     function issecretvalue(value) return value == RESTRICTED_LOCALIZED end
     local addon = {}
@@ -114,6 +119,25 @@ test('Forever collector and runtime schema preserve channel identity and reject 
   assert.throws(() => collect(request, '1.15.9', '69722', 11509), /supported Retail or Forever/);
 });
 
+test('collector isolates overlong strings and preserves the importable boundary', () => {
+  const snapshot = runtimeSchema.parse(JSON.parse(collect(
+    '{cvars={"example","longDefault"}, atlases={}, symbols={}, globalStrings={"LIMIT_LOCALIZED","LONG_LOCALIZED","EXAMPLE_LOCALIZED"}}',
+  )));
+  assert.deepEqual(snapshot.records.cvars.map(({ name }) => name), ['example']);
+  assert.deepEqual(snapshot.failed.cvars, ['longDefault']);
+  assert.equal(snapshot.records.globalStrings[0].value.length, 65536);
+  assert.equal(snapshot.records.globalStrings[1].name, 'EXAMPLE_LOCALIZED');
+  assert.deepEqual(snapshot.failed.globalStrings, ['LONG_LOCALIZED']);
+});
+
+test('runtime snapshot path arrays reject blank entries before opening files', async () => {
+  assert.deepEqual(await loadRuntimeSnapshots(), []);
+  assert.deepEqual(await loadRuntimeSnapshots([]), []);
+  for (const file of ['', ' ', undefined]) {
+    await assert.rejects(loadRuntimeSnapshots([file]), /non-empty runtime snapshot path/);
+  }
+});
+
 test('runtime JSON rejects current values, unrequested entries, duplicates and executable input', async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wow-runtime-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -157,6 +181,26 @@ test('snapshot import accepts a UTF-8 BOM and rejects invalid UTF-8 and oversize
   await writeFile(file, Buffer.concat([atLimit, Buffer.from(' ')]));
   await assert.rejects(loadRuntimeData(file), /10 MB limit/);
   await assert.rejects(loadRuntimeData(directory), /regular file/);
+});
+
+test('snapshot import rejects a POSIX FIFO without waiting for a writer', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wow-runtime-file-type-'));
+  const fifo = path.join(directory, 'not-a-snapshot');
+  const run = promisify(execFile);
+  const runtime = new URL('../src/runtime-data.mjs', import.meta.url);
+  try {
+    await run('mkfifo', [fifo], { timeout: 2000 });
+    await assert.rejects(run(process.execPath, ['--input-type=module', '-e',
+      `import { loadRuntimeData } from ${JSON.stringify(runtime.href)}; await loadRuntimeData(process.argv[1]);`, fifo,
+    ], { timeout: 3000 }), (error) => {
+      assert.equal(error.killed, false, 'snapshot reader should reject the file type before the timeout');
+      assert.match(error.stderr, /Runtime snapshot must be a regular file/);
+      return true;
+    });
+  } finally {
+    await unlink(fifo).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+    await rmdir(directory);
+  }
 });
 
 for (const channel of ['retail', 'forever']) test(`${channel} CLI serves a collector snapshot over MCP with build and locale gates`, async (t) => {

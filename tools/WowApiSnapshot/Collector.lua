@@ -1,6 +1,7 @@
 local _, addon = ...
 local categories = { "cvars", "atlases", "symbols", "globalStrings" }
 local issecretvalue = _G.issecretvalue or function() return false end
+local maxTextBytes = 65536
 
 local function readable(value)
   assert(not issecretvalue(value), "Restricted resource observation")
@@ -10,6 +11,11 @@ end
 local function boolean(value)
   value = readable(value)
   assert(type(value) == "boolean", "Invalid resource flag")
+  return value
+end
+
+local function observedText(value)
+  assert(#value <= maxTextBytes, "Observed text exceeds the snapshot field limit")
   return value
 end
 
@@ -61,7 +67,7 @@ local function cvar(name)
   defaultValue = readable(defaultValue)
   if defaultValue == nil then return nil end
   assert(type(defaultValue) == "string", "Invalid CVar default")
-  return { name = name, defaultValue = defaultValue, isStoredServerAccount = boolean(account),
+  return { name = name, defaultValue = observedText(defaultValue), isStoredServerAccount = boolean(account),
     isStoredServerCharacter = boolean(character), isLockedFromUser = boolean(locked),
     isSecure = boolean(secure), isReadOnly = boolean(readOnly) }
 end
@@ -80,10 +86,10 @@ end
 
 local function globalString(name)
   local value = readable(rawget(_G, name))
-  if type(value) == "string" then return { name = name, value = value } end
+  if type(value) == "string" then return { name = name, value = observedText(value) } end
 end
 
-function addon.collect(request)
+local function collect(request)
   local version, build, _, interfaceVersion = GetBuildInfo()
   local channel
   if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and (tonumber(version:match("^(%d+)")) or 0) >= 10 then
@@ -142,7 +148,7 @@ local function encode(value, array)
 end
 
 function addon.export(request)
-  local json = encode(addon.collect(request), false)
+  local json = encode(collect(request), false)
   assert(#json <= 10 * 1024 * 1024, "Snapshot exceeds 10 MB; request fewer names")
   return json
 end

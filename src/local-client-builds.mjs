@@ -1,5 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { matchesChannel } from './channels.mjs';
 
 const installations = {
   retail: { directory: '_retail_', product: 'wow' },
@@ -15,6 +16,10 @@ export async function localClientBuilds(root, catalogs) {
   const productColumn = columns.indexOf('Product');
   const activeColumn = columns.indexOf('Active');
   const versionColumn = columns.indexOf('Version');
+  const fields = rows.filter((row) => row.trim()).map((row) => row.split('|'));
+  const required = [productColumn, activeColumn, versionColumn];
+  const validTable = required.every((index) => index !== -1 && index === columns.lastIndexOf(columns[index]))
+    && fields.every((row) => row.length === columns.length);
 
   return Promise.all([...catalogs].map(async ([channel, catalog]) => {
     const latest = catalog.entry();
@@ -24,7 +29,7 @@ export async function localClientBuilds(root, catalogs) {
       latestCatalogCommit: latest.commit,
     };
     if (!root) return { ...result, status: 'root_not_configured' };
-    if ([productColumn, activeColumn, versionColumn].includes(-1)) {
+    if (!validTable) {
       return { ...result, status: 'build_metadata_unavailable' };
     }
 
@@ -32,11 +37,11 @@ export async function localClientBuilds(root, catalogs) {
     // A launcher row alone can survive a removed client.
     const executable = await stat(path.join(root, directory, 'Wow.exe')).catch(() => null);
     if (!executable?.isFile()) return { ...result, status: 'client_not_found' };
-    const candidates = new Set(rows.map((row) => row.split('|'))
+    const candidates = new Set(fields
       .filter((row) => row[productColumn] === product && row[activeColumn] === '1')
       .map((row) => row[versionColumn]));
     const [version] = candidates;
-    if (candidates.size !== 1 || !/^\d+\.\d+\.\d+\.\d+$/.test(version ?? '')) {
+    if (candidates.size !== 1 || !/^\d+\.\d+\.\d+\.\d+$/.test(version ?? '') || !matchesChannel(version, channel)) {
       return { ...result, status: 'build_metadata_unavailable' };
     }
 
