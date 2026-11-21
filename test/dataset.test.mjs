@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { loadStore } from '../src/data-store.mjs';
+import { loadCatalog, loadStore } from '../src/data-store.mjs';
 
 const store = await loadStore();
 
@@ -47,3 +47,18 @@ test('exposes enum values and event payloads', () => {
   const event = store.lookup('UNIT_AURA', 'event')[0].entry;
   assert.ok(event.payload.some((field) => field.Name === 'unitTarget'));
 });
+
+for (const channel of ['retail', 'forever']) {
+  test(`${channel} lookups preserve enum, event and widget identities`, async () => {
+    const catalog = await loadCatalog(undefined, { channel });
+    const current = await catalog.store();
+    assert.deepEqual(current.lookup('Enum.UnitStat'), []);
+    assert.equal(current.lookup('UnitStat')[0].entry.fullName, 'UnitStat');
+    assert.equal(current.lookup('enum.spellbookspellbank')[0].entryKind, 'enumeration');
+    const event = current.lookup('ACCOUNT_CHARACTER_CURRENCY_DATA_RECEIVED', 'event')[0].entry;
+    assert.strictEqual(current.lookup('C_CurrencyInfo.ACCOUNT_CHARACTER_CURRENCY_DATA_RECEIVED', 'event')[0]?.entry, event);
+    const system = current.lookup('C_CurrencyInfo', 'system')[0].entry;
+    assert.strictEqual(current.lookup(`${system.kind}:${system.namespace}:${system.name}`, 'system')[0]?.entry, system);
+    assert.equal(current.lookup(' Frame : SetScript ', 'function')[0]?.entry.fullName, 'ScriptRegion:SetScript');
+  });
+}

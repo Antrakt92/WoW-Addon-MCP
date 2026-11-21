@@ -1,18 +1,15 @@
+import { entryIdentity } from './data-store.mjs';
+
+export { entryIdentity };
+
 const SOURCE_FIELDS = new Set(['sourceFile', 'AlternateSourceFiles']);
 
 function stripSource(value) {
   if (Array.isArray(value)) return value.map(stripSource);
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => !SOURCE_FIELDS.has(key))
-    .map(([key, nested]) => [key, stripSource(nested)]));
-}
-
-export function entryIdentity(entryKind, entry) {
-  if (entryKind === 'function') return entry.fullName;
-  if (entryKind === 'event') return entry.namespace ? `${entry.namespace}.${entry.literalName}` : entry.literalName;
-  if (entryKind === 'system') return `${entry.kind}:${entry.namespace ?? ''}:${entry.name}`;
-  return entry.name;
+  return Object.fromEntries(Object.keys(value).sort()
+    .filter((key) => !SOURCE_FIELDS.has(key))
+    .map((key) => [key, stripSource(value[key])]));
 }
 
 export function entryFingerprint(entry) {
@@ -20,9 +17,11 @@ export function entryFingerprint(entry) {
 }
 
 function entryMap(store, kind, namespace) {
+  const needle = namespace?.trim().toLocaleLowerCase('en-US');
   const categories = kind ? [[kind, store.categories[kind] ?? []]] : Object.entries(store.categories);
   return new Map(categories.flatMap(([entryKind, entries]) => entries
-    .filter((entry) => !namespace || entry.namespace === namespace || entry.fullName?.startsWith(`${namespace}.`))
+    .filter((entry) => !needle || entry.namespace?.toLocaleLowerCase('en-US') === needle
+      || entry.fullName?.toLocaleLowerCase('en-US').startsWith(`${needle}.`))
     .map((entry) => [`${entryKind}\0${entryIdentity(entryKind, entry)}`, { entryKind, entry }])));
 }
 

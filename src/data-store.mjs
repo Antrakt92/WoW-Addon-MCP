@@ -9,6 +9,21 @@ function normalized(value) {
   return value.toLocaleLowerCase('en-US');
 }
 
+export function entryIdentity(entryKind, entry) {
+  if (entryKind === 'function') return entry.fullName;
+  if (entryKind === 'event') return entry.namespace ? `${entry.namespace}.${entry.literalName}` : entry.literalName;
+  if (entryKind === 'system') return `${entry.kind}:${entry.namespace ?? ''}:${entry.name}`;
+  return entry.name;
+}
+
+function exactNames(entryKind, entry) {
+  const names = [entryIdentity(entryKind, entry)];
+  if (entryKind === 'event') names.push(entry.literalName);
+  if (entryKind === 'system') names.push(entry.name, entry.namespace);
+  if (entryKind === 'enumeration') names.push(`Enum.${entry.name}`);
+  return names.filter(Boolean);
+}
+
 function score(entry, query) {
   const names = [entry.fullName, entry.literalName, entry.name, entry.namespace].filter(Boolean).map(normalized);
   if (names.includes(query)) return 0;
@@ -69,29 +84,27 @@ export class WowApiStore {
 
   lookup(name, kind, { allowShortNames = true } = {}) {
     const needle = normalized(name.trim());
-    const needles = new Set([needle]);
-    if (needle.startsWith('enum.')) needles.add(needle.slice(5));
     const categories = kind ? [[kind, this.categories[kind] ?? []]] : Object.entries(this.categories);
-    const matches = categories.flatMap(([entryKind, entries]) => entries
-      .filter((entry) => [
-        entry.fullName,
-        entry.literalName,
-        entry.name,
-        ...(entryKind === 'system' ? [entry.namespace] : []),
-      ].filter(Boolean).some((value) => needles.has(normalized(value))))
-      .map((entry) => ({ entryKind, entry })));
-
-    const exact = matches.filter(({ entryKind, entry }) => needles.has(normalized(entry.fullName ?? entry.literalName ?? entry.name))
-      || (entryKind === 'system' && entry.namespace && needles.has(normalized(entry.namespace))));
+    const exact = [];
+    const short = [];
+    for (const [entryKind, entries] of categories) {
+      for (const entry of entries) {
+        if (exactNames(entryKind, entry).some((value) => normalized(value) === needle)) {
+          exact.push({ entryKind, entry });
+        } else if (allowShortNames && normalized(entry.name) === needle) {
+          short.push({ entryKind, entry, matchType: 'short-name' });
+        }
+      }
+    }
     if (exact.length) return exact;
-    if ((!allowShortNames || matches.length === 0) && (!kind || kind === 'function') && name.includes(':')) {
-      const separator = name.indexOf(':');
-      const widget = this.widget(name.slice(0, separator));
-      const methodName = normalized(name.slice(separator + 1));
+    if (short.length === 0 && (!kind || kind === 'function') && needle.includes(':')) {
+      const separator = needle.indexOf(':');
+      const widget = this.widget(needle.slice(0, separator));
+      const methodName = needle.slice(separator + 1).trim();
       const method = widget?.methods.find((entry) => normalized(entry.name) === methodName);
       if (method) return [{ entryKind: 'function', entry: method }];
     }
-    return allowShortNames ? matches.map((match) => ({ ...match, matchType: 'short-name' })) : [];
+    return short;
   }
 
   resources(query, { kind, exact = false, limit = 20, offset = 0 } = {}) {
@@ -146,11 +159,15 @@ export async function loadStore(datasetPath) {
 }
 
 export class DatasetCatalog {
+  #apiLoads = new Map();
+  #resourceLoads = new Map();
+
   constructor(manifest, manifestPath, cacheSize = 2) {
     if (manifest.schemaVersion !== 1) throw new Error(`Unsupported dataset manifest schema: ${manifest.schemaVersion}`);
     channelProfile(manifest.channel);
     if (!Array.isArray(manifest.versions) || manifest.versions.length === 0) throw new Error('Dataset manifest has no versions');
     if (manifest.versions.some((entry) => !matchesChannel(entry.clientVersion, manifest.channel))) throw new Error('Dataset manifest mixes client channels');
+    if (!Number.isSafeInteger(cacheSize) || cacheSize < 0) throw new RangeError('Dataset cache size must be a non-negative safe integer');
     this.manifest = manifest;
     this.manifestPath = manifestPath;
     this.cacheSize = cacheSize;
@@ -209,41 +226,52 @@ export class DatasetCatalog {
     return path.resolve(path.dirname(this.manifestPath), entry.file);
   }
 
+  async #readSnapshot(key, cache, pending, read) {
+    if (cache.has(key)) {
+      const snapshot = cache.get(key);
+      cache.delete(key);
+      cache.set(key, snapshot);
+      return snapshot;
+    }
+    if (pending.has(key)) return pending.get(key);
+
+    const load = read();
+    pending.set(key, load);
+    try {
+      const snapshot = await load;
+      if (this.cacheSize > 0) {
+        cache.set(key, snapshot);
+        if (cache.size > this.cacheSize) cache.delete(cache.keys().next().value);
+      }
+      return snapshot;
+    } finally {
+      pending.delete(key);
+    }
+  }
+
   async lookupResources(query, { version = 'latest', ...options } = {}) {
     const entry = this.entry(version);
     if (!entry.resourceFile) return (await this.store(version)).resources(query, options);
-    if (!this.resourceCache.has(entry.version)) {
+    const resources = await this.#readSnapshot(entry.version, this.resourceCache, this.#resourceLoads, async () => {
       const file = this.datasetPath({ file: entry.resourceFile });
       const dataset = JSON.parse(gunzipSync(await readFile(file)));
       if (dataset.schemaVersion !== 1 || dataset.source.commit !== entry.commit || dataset.source.version !== entry.clientVersion
         || (dataset.source.channel ?? 'retail') !== this.manifest.channel) {
         throw new Error('Resource snapshot does not match the selected API build');
       }
-      this.resourceCache.set(entry.version, dataset.resources);
-      while (this.resourceCache.size > this.cacheSize) this.resourceCache.delete(this.resourceCache.keys().next().value);
-    }
-    const resources = this.resourceCache.get(entry.version);
-    this.resourceCache.delete(entry.version);
-    this.resourceCache.set(entry.version, resources);
+      return dataset.resources;
+    });
     return resourceMatches(resources, query, options);
   }
 
   async store(version = 'latest') {
-    const resolved = this.resolve(version);
-    if (this.cache.has(resolved)) {
-      const store = this.cache.get(resolved);
-      this.cache.delete(resolved);
-      this.cache.set(resolved, store);
+    const entry = this.entry(version);
+    return this.#readSnapshot(entry.version, this.cache, this.#apiLoads, async () => {
+      const store = await loadStore(this.datasetPath(entry));
+      if (store.dataset.source.commit !== entry.commit || store.dataset.source.version !== entry.clientVersion
+        || (store.dataset.source.channel ?? 'retail') !== this.manifest.channel) throw new Error('API snapshot does not match the selected channel and build');
       return store;
-    }
-
-    const store = await loadStore(this.datasetPath(this.entries.get(resolved)));
-    const entry = this.entry(resolved);
-    if (store.dataset.source.commit !== entry.commit || store.dataset.source.version !== entry.clientVersion
-      || (store.dataset.source.channel ?? 'retail') !== this.manifest.channel) throw new Error('API snapshot does not match the selected channel and build');
-    this.cache.set(resolved, store);
-    while (this.cache.size > this.cacheSize) this.cache.delete(this.cache.keys().next().value);
-    return store;
+    });
   }
 }
 

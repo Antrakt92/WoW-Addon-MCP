@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -7,7 +7,7 @@ import { gunzipSync } from 'node:zlib';
 
 import { DatasetCatalog, loadCatalog, WowApiStore } from '../src/data-store.mjs';
 import { compareVersions, updateManifest } from '../scripts/lib/dataset-manifest.mjs';
-import { apiHistory, compareApi, diffVersions } from '../src/version-tools.mjs';
+import { apiHistory, compareApi, diffVersions, entryFingerprint } from '../src/version-tools.mjs';
 
 const fixture = JSON.parse(await readFile(new URL('fixtures/migration.json', import.meta.url), 'utf8'));
 
@@ -88,10 +88,49 @@ test('compares pinned API fixtures and histories without blending version snapsh
   assert.deepEqual(diff.counts, { added: 9, removed: 3, changed: 18 });
   assert.ok(diff.changes.some((entry) => entry.identity === 'C_UnitAuras.AddAuraSound' && entry.status === 'added'));
   assert.ok(diff.changes.some((entry) => entry.identity === 'C_UnitAuras.AddPrivateAuraAppliedSound' && entry.status === 'removed'));
+  const alternateSpelling = await diffVersions(catalog, '12.0.7', '12.1.0', { namespace: ' c_unitauras ', limit: 100 });
+  assert.deepEqual(alternateSpelling.changes, diff.changes);
 
   const history = await apiHistory(catalog, 'AuraContainer', { kind: 'widget' });
   assert.deepEqual(history.transitions.map((entry) => [entry.version.version, entry.status]), [
     ['12.0.7', 'absent'],
     ['12.1.0', 'introduced'],
   ]);
+});
+
+test('accepts qualified event identities in comparisons and history', async () => {
+  const catalog = await loadCatalog();
+  const name = 'C_CurrencyInfo.ACCOUNT_CHARACTER_CURRENCY_DATA_RECEIVED';
+  const comparison = await compareApi(catalog, name, 'latest', 'latest', 'event');
+  assert.equal(comparison.comparisons.length, 1);
+  assert.equal(comparison.comparisons[0].identity, name);
+  assert.equal(comparison.comparisons[0].status, 'unchanged');
+  const history = await apiHistory(catalog, name, { kind: 'event', fromVersion: 'latest' });
+  assert.equal(history.transitions[0].status, 'present');
+});
+
+test('fingerprints ignore object key order and source paths but preserve argument order', () => {
+  const before = { metadata: { SecretArguments: 'AllowedWhenUntainted', NeverSecret: true }, arguments: [{ Name: 'a' }, { Name: 'b' }], sourceFile: 'a.lua' };
+  const after = { arguments: before.arguments, metadata: { NeverSecret: true, SecretArguments: 'AllowedWhenUntainted' }, sourceFile: 'b.lua' };
+  assert.equal(entryFingerprint(before), entryFingerprint(after));
+  assert.notEqual(entryFingerprint(before), entryFingerprint({ ...after, arguments: [...after.arguments].reverse() }));
+});
+
+test('shares concurrent API loads and retries failed reads without caching the failure', async (t) => {
+  const bundled = await loadCatalog();
+  const entry = bundled.entry();
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wow-catalog-retry-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = 'snapshot.json.gz';
+  const catalog = new DatasetCatalog({
+    schemaVersion: 1, channel: 'retail', default: entry.version, versions: [{ ...entry, file }],
+  }, path.join(directory, 'manifest.json'));
+  const failed = await Promise.allSettled([catalog.store(), catalog.store(entry.clientVersion)]);
+  assert.deepEqual(failed.map((result) => result.reason?.code), ['ENOENT', 'ENOENT']);
+  await writeFile(path.join(directory, file), await readFile(bundled.datasetPath(entry)));
+  const [patch, build, fullVersion] = await Promise.all([catalog.store(entry.version), catalog.store(entry.build), catalog.store(entry.clientVersion)]);
+  assert.strictEqual(patch, build);
+  assert.strictEqual(patch, fullVersion);
+  assert.strictEqual(await catalog.store(), patch);
+  await assert.rejects(loadCatalog(undefined, { cacheSize: -1 }), /cache size/i);
 });

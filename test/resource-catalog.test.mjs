@@ -37,3 +37,21 @@ test('resource lookups stay separate from API loading and bound historical resou
   assert.equal(catalog.cache.size, 0);
   assert.equal(catalog.resourceCache.has('10.0.0'), false);
 });
+
+test('returns resource results with caching disabled and paginates consistently', async () => {
+  const catalog = await loadCatalog(undefined, { cacheSize: 0 });
+  const options = { kind: 'symbol', limit: 2 };
+  const [first, second] = await Promise.all([
+    catalog.lookupResources('CreateFrame', options),
+    catalog.lookupResources('CreateFrame', { ...options, offset: 2 }),
+  ]);
+  assert.equal(first.available, true);
+  assert.ok(first.total > 4);
+  assert.equal(first.total, second.total);
+  assert.equal(first.nextOffset, 2);
+  assert.equal(second.nextOffset, 4);
+  const combined = await catalog.lookupResources('CreateFrame', { ...options, limit: 4 });
+  assert.deepEqual(combined.entries, [...first.entries, ...second.entries]);
+  assert.equal(catalog.resourceCache.size, 0);
+  assert.equal(catalog.cache.size, 0);
+});
