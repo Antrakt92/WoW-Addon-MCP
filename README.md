@@ -1,8 +1,26 @@
 # WoW AddOn API MCP
 
-Give your coding agent World of Warcraft AddOn API documentation for **Retail and Forever beta**. It can look up functions, events, widgets, and restrictions, or compare APIs between game versions while helping you build an addon.
+Give your coding agent World of Warcraft AddOn API documentation for **Retail and Forever**. It can look up functions, events, widgets, and restrictions, or compare APIs between game versions while helping you build an addon.
 
-## Connect your coding agent
+## Use this fork in Codex
+
+Install Node.js 20 or newer and run `npm ci` in this checkout. Register the
+checkout entry point with the absolute paths on your machine.
+
+```powershell
+codex mcp add --env 'WOW_INSTALL_ROOT=D:/Games/World of Warcraft' wow-addon-api -- node 'D:/Source/WoW-Addon-MCP/src/cli.mjs'
+```
+
+Open a new Codex session and call `get_local_client_builds`. Use the reported
+`installedVersion` for each channel with an `exact_match` status. The report
+reads Battle.net launcher metadata. For a missing build, see the
+[dataset refresh instructions](docs/TECHNICAL_GUIDE.md#local-development).
+
+Use `npm run check` after edits. The [upstream project](https://github.com/Koodattu/wow-addon-api-mcp)
+maintains the npm package and its release workflow. See [LICENSE](LICENSE)
+and [third-party notices](THIRD_PARTY_NOTICES.md) for the code and data terms.
+
+## Connect to the upstream npm package
 
 Install [Node.js 20 or newer](https://nodejs.org/), then follow the instructions for your agent. No API key or repository clone is needed.
 
