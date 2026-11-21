@@ -1,18 +1,21 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { withHistoryWorktree } from '../scripts/build-history.mjs';
 
 const builder = fileURLToPath(new URL('../scripts/build-dataset.mjs', import.meta.url));
 const updater = fileURLToPath(new URL('../scripts/update-data.mjs', import.meta.url));
 const history = fileURLToPath(new URL('../scripts/build-history.mjs', import.meta.url));
 
 async function fixture(t, { version = '12.1.5.70961', subject = '12.1.5 (70961)' } = {}) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'wow-dataset-build-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wow-dataset-build-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'source');
+  await mkdir(directory);
   const git = (...args) => execFileSync('git', ['-C', directory, ...args], { stdio: 'pipe' });
   git('init', '--quiet');
   if (version) {
@@ -21,7 +24,7 @@ async function fixture(t, { version = '12.1.5.70961', subject = '12.1.5 (70961)'
   }
   git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
     '-c', 'commit.gpgsign=false', 'commit', '--quiet', '--allow-empty', '-m', subject);
-  const manifest = path.join(directory, 'manifest.json');
+  const manifest = path.join(root, 'manifest.json');
   const run = (...args) => spawnSync(process.execPath,
     [builder, '--source', directory, '--manifest', manifest, ...args], { encoding: 'utf8' });
   return { directory, manifest, run };
@@ -67,11 +70,40 @@ test('build refuses dirty source and preflights incompatible manifests and outpu
   ] });
   await writeFile(clean.manifest, retained);
   for (const output of ['old-api.json.gz', 'old-resources.json.gz']) {
-    const conflict = clean.run('--output', path.join(clean.directory, output));
+    const conflict = clean.run('--output', path.join(path.dirname(clean.manifest), output));
     assert.equal(conflict.status, 1);
     assert.match(conflict.stderr, /must use distinct paths/);
   }
   assert.equal(await readFile(clean.manifest, 'utf8'), retained);
+});
+
+test('build preflights output paths without modifying source or unrelated files', async (t) => {
+  const { directory, manifest, run } = await fixture(t);
+  const root = path.dirname(manifest);
+  const sourceVersion = path.join(directory, 'version.txt');
+  const alias = path.join(root, 'source-alias');
+  await symlink(directory, alias, 'junction');
+  for (const output of [sourceVersion, path.join(alias, 'new', 'archive.json.gz')]) {
+    const overlap = run('--output', output);
+    assert.equal(overlap.status, 1);
+    assert.match(overlap.stderr, /overlaps its source checkout/);
+  }
+  assert.equal(await readFile(sourceVersion, 'utf8'), '12.1.5.70961\n');
+  assert.deepEqual((await readdir(directory)).sort(), ['.git', 'version.txt']);
+
+  const archive = path.join(root, 'archive.json.gz');
+  await mkdir(archive);
+  const invalid = run('--output', archive);
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /not a regular file/);
+
+  const stale = path.join(root, 'unrelated.json.gz.tmp');
+  await writeFile(stale, 'preserved bytes');
+  const reserved = run('--output', stale.slice(0, -4));
+  assert.equal(reserved.status, 1);
+  assert.match(reserved.stderr, /temporary file already exists/);
+  assert.equal(await readFile(stale, 'utf8'), 'preserved bytes');
+  await assert.rejects(readFile(manifest), { code: 'ENOENT' });
 });
 
 test('build locks the manifest before source validation and releases the lock on failure', async (t) => {
@@ -128,4 +160,19 @@ test('refresh and history reject unknown options and missing values before Git o
     assert.match(result.stderr, message);
   }
   await assert.rejects(readFile(path.join(directory, '.cache')), { code: 'ENOENT' });
+});
+
+test('history builds isolate temporary checkouts and preserve preexisting worktrees', async (t) => {
+  const { directory } = await fixture(t);
+  const prefix = path.join(directory, 'history');
+  await mkdir(prefix);
+  await writeFile(path.join(prefix, 'saved-edit.txt'), 'keep the unrelated work');
+  const sandboxes = await Promise.all([1, 2].map(() => withHistoryWorktree(directory, prefix, 'HEAD', async (checkout) => {
+    assert.equal((await readFile(path.join(checkout, 'version.txt'), 'utf8')).trim(), '12.1.5.70961');
+    return checkout;
+  })));
+  assert.notEqual(sandboxes[0], sandboxes[1]);
+  assert.equal(await readFile(path.join(prefix, 'saved-edit.txt'), 'utf8'), 'keep the unrelated work');
+  await assert.rejects(withHistoryWorktree(directory, prefix, 'unavailable-ref', () => assert.fail('callback ran')));
+  assert.deepEqual((await readdir(directory)).sort(), ['.git', 'history', 'version.txt']);
 });

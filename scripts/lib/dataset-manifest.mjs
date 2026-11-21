@@ -42,7 +42,7 @@ export async function updateManifest(manifestPath, entry, channel = 'retail') {
     versions,
   };
   const temporary = `${manifestPath}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(updated, null, 2)}\n`);
+  await writeFile(temporary, `${JSON.stringify(updated, null, 2)}\n`, { flag: 'wx' });
   await rename(temporary, manifestPath);
   return updated;
 }

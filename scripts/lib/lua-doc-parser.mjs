@@ -184,10 +184,36 @@ export function normalizeSourceEscapes(source) {
 }
 
 export function parseLuaDocumentationSource(source, filename = '<source>') {
-  // A few historical generated tables contain C-style casts even though the
-  // surrounding file is Lua. The cast affects representation, not API shape.
-  const normalizedSource = source.replace(/\([A-Za-z_][A-Za-z0-9_]*\)(?=[A-Za-z_])/g, '');
-  const ast = parse(normalizedSource, filename);
+  source = source.replace(/^\uFEFF/, '');
+  let ast;
+  try {
+    ast = parse(source, filename);
+  } catch (error) {
+    // Some historical constant values are C-style casts of identifiers. Only
+    // normalize tokens in value positions after the ordinary Lua parse fails.
+    luaparse.parse(source, { wait: true, ranges: true, luaVersion: '5.1' });
+    const { EOF, Identifier, Punctuator } = luaparse.tokenTypes;
+    const tokens = [];
+    try {
+      for (let token = luaparse.lex(); token.type !== EOF; token = luaparse.lex()) tokens.push(token);
+    } catch {
+      throw error;
+    }
+    let normalized = '';
+    let offset = 0;
+    for (let index = 1; index + 3 < tokens.length; index += 1) {
+      const [previous, open, type, close, value] = tokens.slice(index - 1, index + 4);
+      if (previous.type !== Punctuator || !['=', '{', ',', ';'].includes(previous.value)
+        || open.type !== Punctuator || open.value !== '(' || type.type !== Identifier
+        || close.type !== Punctuator || close.value !== ')' || value.type !== Identifier
+        || close.range[1] !== value.range[0]) continue;
+      normalized += source.slice(offset, open.range[0]);
+      offset = close.range[1];
+      index += 2;
+    }
+    if (!offset) throw error;
+    ast = parse(normalized + source.slice(offset), filename);
+  }
   const candidates = [];
 
   for (const statement of ast.body) {
@@ -222,7 +248,7 @@ function walk(node, visitor) {
 }
 
 export function parseLuaMixinsSource(source, filename = '<source>') {
-  const ast = parse(source, filename);
+  const ast = parseLuaSource(source, filename);
   const methods = [];
   const inheritance = [];
 

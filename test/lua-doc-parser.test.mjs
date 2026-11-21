@@ -36,15 +36,23 @@ test('accepts C-style casts emitted in historical constants tables', () => {
           { Name = "SLOT", Type = "number", Value = (int)MAX_PETS },
         } },
       },
+      Documentation = { "Preserve the literal (int)MAX_PETS", [=[Preserve (int)MAX_PETS here too]=] },
     }
   `);
   assert.equal(result.Tables[0].Values[0].Value, 'MAX_PETS');
+  assert.deepEqual(result.Documentation, ['Preserve the literal (int)MAX_PETS', 'Preserve (int)MAX_PETS here too']);
+});
+
+test('preserves cast-like examples in valid generated Lua and accepts a Windows UTF-8 BOM', () => {
+  const source = '\uFEFF' + 'local Example = { Tables = {}, Documentation = { "Example (type)Name" } }';
+  assert.deepEqual(parseLuaDocumentationSource(source).Documentation, ['Example (type)Name']);
 });
 
 test('extracts public mixin methods and inheritance', () => {
   const result = parseLuaMixinsSource(`
     ChildMixin = CreateFromMixins(ParentMixin)
     function ChildMixin:SetUnit(unit, filter) end
+    while true do break; end
   `);
 
   assert.deepEqual(result.inheritance, [{ target: 'ChildMixin', parents: ['ParentMixin'] }]);

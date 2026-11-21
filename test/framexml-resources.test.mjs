@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { extractFrameXmlResources, parseResourceLua, parseResourceXml } from '../scripts/lib/framexml-resources.mjs';
+import { extractDataset } from '../scripts/lib/extract-dataset.mjs';
 import { normalizeSourceEscapes } from '../scripts/lib/lua-doc-parser.mjs';
 import { loadCatalog, WowApiStore } from '../src/data-store.mjs';
 import { formatMatches, formatResources } from '../src/formatters.mjs';
@@ -148,6 +149,35 @@ test('resource lookup reports coverage and pagination without contaminating API 
   const old = new WowApiStore({ ...store.dataset, resources: undefined });
   assert.equal(old.resources('CreateFrame').available, false);
   assert.match(formatResources(old.resources('CreateFrame'), catalog.entry('10.0.0')), /not collected/);
+});
+
+test('intrinsic widget methods defer to matching generated Blizzard contracts', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wow-intrinsic-method-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const addons = path.join(root, 'Interface', 'AddOns');
+  const documentation = path.join(addons, 'Blizzard_APIDocumentationGenerated');
+  const intrinsic = path.join(addons, 'SyntheticWidget');
+  await mkdir(documentation, { recursive: true });
+  await mkdir(intrinsic);
+  await writeFile(path.join(documentation, 'Widget.lua'), `
+    local Widget = {
+      Name = "ExampleFrame", Type = "ScriptObject",
+      Functions = {{ Name = "GetValue", Type = "Function", Returns = {{ Name = "value", Type = "number" }} }},
+    }
+  `);
+  await writeFile(path.join(intrinsic, 'Widget.xml'),
+    '<Ui><Frame name="ExampleFrame" intrinsic="true"><Mixins><Mixin key="ExamplePublicMixin"/></Mixins></Frame></Ui>');
+  await writeFile(path.join(intrinsic, 'Widget.lua'), `
+    function ExamplePublicMixin:GetValue() end
+    function ExamplePublicMixin:GetOther() end
+  `);
+
+  const dataset = await extractDataset(root, { channel: 'retail' }, { includeResources: false });
+  const value = dataset.functions.find((method) => method.fullName === 'ExampleFrame:GetValue');
+  assert.equal(value.sourceKind, 'blizzard-documentation');
+  assert.deepEqual(value.returns, [{ Name: 'value', Type: 'number' }]);
+  assert.equal(dataset.functions.find((method) => method.fullName === 'ExampleFrame:GetOther').sourceKind, 'framexml');
+  assert.deepEqual(dataset.widgets[0].methods, dataset.functions);
 });
 
 test('exact API identity wins over short names and migration tools never substitute a namespaced API', async () => {

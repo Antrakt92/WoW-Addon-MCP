@@ -7,7 +7,7 @@ export async function writeArchive(output, dataset) {
   // Preserve the archive convention across Windows and Linux zlib builds.
   compressed[9] = 0x0a;
   await mkdir(path.dirname(output), { recursive: true });
-  await writeFile(`${output}.tmp`, compressed);
+  await writeFile(`${output}.tmp`, compressed, { flag: 'wx' });
   await rename(`${output}.tmp`, output);
   return compressed.length;
 }

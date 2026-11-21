@@ -264,17 +264,17 @@ export async function extractDataset(sourceRoot, source, { includeResources = tr
   const intrinsicWidgets = await extractIntrinsicWidgets(path.join(sourceRoot, 'Interface'), sourceRoot);
   for (const intrinsic of intrinsicWidgets) {
     const existing = widgets.find((widget) => widget.name === intrinsic.name);
+    let newMethods = intrinsic.methods;
     if (existing) {
       const methodNames = new Set(existing.methods.map((method) => method.name));
-      for (const method of intrinsic.methods) {
-        if (!methodNames.has(method.name)) existing.methods.push(method);
-      }
+      newMethods = newMethods.filter((method) => !methodNames.has(method.name));
+      existing.methods.push(...newMethods);
       existing.metadata.Intrinsic = intrinsic.metadata;
       existing.inherits = [...new Set([...existing.inherits, ...intrinsic.inherits])];
     } else {
       widgets.push(intrinsic);
     }
-    functions.push(...intrinsic.methods);
+    functions.push(...newMethods);
   }
 
   const normalizedFunctions = deduplicate(functions, (entry) => entry.fullName, 'function')

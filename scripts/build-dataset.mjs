@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdir, open, readFile, realpath, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -50,11 +50,44 @@ async function sourceVersion(sourceRoot, commit, suppliedVersion) {
   return version;
 }
 
-function requireDistinctOutputs(outputs, lockPath) {
-  const paths = [lockPath, ...outputs.flatMap((output) => [output, `${output}.tmp`])];
+async function destinationPath(file) {
+  const parent = path.dirname(file);
+  try {
+    const resolved = await realpath(parent);
+    if (!(await stat(resolved)).isDirectory()) throw new Error(`Output parent is not a directory: ${parent}`);
+    return path.join(resolved, path.basename(file));
+  } catch (error) {
+    if (error.code !== 'ENOENT' || parent === file) throw error;
+    return path.join(await destinationPath(parent), path.basename(file));
+  }
+}
+
+function requireOutsideSource(sourceRoot, output) {
+  const relative = path.relative(sourceRoot, output);
+  if (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep)) {
+    throw new Error(`Dataset output overlaps its source checkout: ${output}`);
+  }
+}
+
+async function requireDistinctOutputs(outputs, lockPath) {
+  const paths = await Promise.all([lockPath, ...outputs.flatMap((output) => [output, `${output}.tmp`])].map(destinationPath));
   if (paths.some((output, index) => paths.slice(0, index).some((previous) => path.relative(output, previous) === ''))) {
     throw new Error('Manifest, archives, temporary files, and build lock must use distinct paths');
   }
+}
+
+async function validateOutputPaths(sourceRoot, output) {
+  requireOutsideSource(sourceRoot, await destinationPath(output));
+  const existing = await lstat(output).catch((error) => {
+    if (error.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (existing && !existing.isFile()) throw new Error(`Dataset output is not a regular file: ${output}`);
+  const temporary = `${output}.tmp`;
+  if (await lstat(temporary).catch((error) => {
+    if (error.code !== 'ENOENT') throw error;
+    return null;
+  })) throw new Error(`Dataset temporary file already exists: ${temporary}`);
 }
 
 export function validateDataset(dataset) {
@@ -110,8 +143,10 @@ async function buildDataset({ channel, sourceRoot, manifestPath, lockPath, optio
     .filter((entry) => entry.version !== parsedVersion.version)
     .flatMap(({ file, resourceFile }) => [file, resourceFile])
     .filter(Boolean);
-  requireDistinctOutputs([manifestPath, output, ...[resourceOutput, ...retainedArchives]
+  await requireDistinctOutputs([manifestPath, output, ...[resourceOutput, ...retainedArchives]
     .filter(Boolean).map((file) => path.resolve(manifestDirectory, file))], lockPath);
+  const writePaths = [manifestPath, output, ...(includeResources ? [path.join(manifestDirectory, resourceFile)] : [])];
+  await Promise.all(writePaths.map((file) => validateOutputPaths(sourceRoot, file)));
   const commitDate = git(sourceRoot, 'show', '-s', '--format=%cI', commit);
   const branch = git(sourceRoot, 'branch', '--show-current') || profile.branch;
 
@@ -168,11 +203,11 @@ async function main() {
     },
   });
   const channel = options.channel;
-  const sourceRoot = optionPath(options.source, 'source',
-    path.resolve('.cache', channel === 'retail' ? 'wow-ui-source' : 'wow-ui-forever'));
-  const requestedManifest = optionPath(options.manifest, 'manifest', fileURLToPath(channelManifest(channel)));
-  await mkdir(path.dirname(requestedManifest), { recursive: true });
-  const manifestPath = path.join(await realpath(path.dirname(requestedManifest)), path.basename(requestedManifest));
+  const sourceRoot = await realpath(optionPath(options.source, 'source',
+    path.resolve('.cache', channel === 'retail' ? 'wow-ui-source' : 'wow-ui-forever')));
+  const manifestPath = await destinationPath(optionPath(options.manifest, 'manifest', fileURLToPath(channelManifest(channel))));
+  await validateOutputPaths(sourceRoot, manifestPath);
+  await mkdir(path.dirname(manifestPath), { recursive: true });
   const lockPath = `${manifestPath}.lock`;
   const lock = await open(lockPath, 'wx').catch((error) => {
     if (error.code !== 'EEXIST') throw error;
