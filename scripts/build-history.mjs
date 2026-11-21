@@ -2,11 +2,22 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { parseArgs } from 'node:util';
 
 import { compareVersions } from './lib/dataset-manifest.mjs';
 import { channelManifest, channelProfile, matchesChannel } from '../src/channels.mjs';
 
-const channel = argument('--channel', 'retail');
+const { values: options } = parseArgs({
+  options: {
+    channel: { type: 'string', default: 'retail' },
+    from: { type: 'string' },
+    to: { type: 'string' },
+    pinned: { type: 'boolean' },
+    resources: { type: 'boolean' },
+    'allow-partial-resources': { type: 'boolean' },
+  },
+});
+const { channel } = options;
 const { branch } = channelProfile(channel);
 const sourceRoot = path.resolve('.cache', channel === 'retail' ? 'wow-ui-source' : 'wow-ui-forever');
 const worktreeRoot = path.resolve('.cache', channel === 'retail' ? 'wow-ui-history' : 'wow-ui-forever-history');
@@ -23,11 +34,10 @@ function git(root, ...args) {
   return run('git', ['-c', `safe.directory=${safeRoot}`, '-C', root, ...args]);
 }
 
-function argument(name, fallback) {
-  const index = process.argv.indexOf(name);
-  if (index === -1) return fallback;
-  if (!process.argv[index + 1]) throw new Error(`${name} requires a version`);
-  return process.argv[index + 1];
+function versionOption(value, name, fallback) {
+  if (value === undefined) return fallback;
+  if (!/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(value)) throw new Error(`Invalid --${name} version: ${value}`);
+  return value;
 }
 
 function canonicalSnapshots(ref) {
@@ -43,6 +53,9 @@ function canonicalSnapshots(ref) {
 }
 
 async function main() {
+  const from = versionOption(options.from, 'from', channel === 'retail' ? '10.0.0' : '1.60.0');
+  const to = versionOption(options.to, 'to', '999.999.999');
+  if (compareVersions(from, to) > 0) throw new Error('--from must not be later than --to');
   if (!existsSync(path.join(sourceRoot, '.git'))) throw new Error('Run npm run data:update before building history');
   if (existsSync(worktreeRoot)) throw new Error(`History worktree already exists: ${worktreeRoot}`);
   const origin = git(sourceRoot, 'remote', 'get-url', 'origin').replace(/\/?$/, '').replace(/\.git$/, '');
@@ -54,9 +67,7 @@ async function main() {
     run('git', ['-c', `safe.directory=${sourceRoot.replaceAll('\\', '/')}`, '-C', sourceRoot, 'fetch', '--filter=blob:none', 'origin', branch], { stdio: 'inherit' });
   }
 
-  const from = argument('--from', channel === 'retail' ? '10.0.0' : '1.60.0');
-  const to = argument('--to', '999.999.999');
-  const candidates = process.argv.includes('--pinned')
+  const candidates = options.pinned
     ? JSON.parse(await readFile(channelManifest(channel), 'utf8')).versions
     : canonicalSnapshots('FETCH_HEAD');
   const snapshots = candidates.filter((snapshot) => (
@@ -74,8 +85,8 @@ async function main() {
         '--channel', channel,
         '--source', worktreeRoot,
         '--client-version', `${snapshot.version}.${snapshot.build}`,
-        ...(process.argv.includes('--resources') ? [] : ['--api-only']),
-        ...(process.argv.includes('--allow-partial-resources') ? ['--allow-partial-resources'] : []),
+        ...(options.resources ? [] : ['--api-only']),
+        ...(options['allow-partial-resources'] ? ['--allow-partial-resources'] : []),
       ], { stdio: 'inherit' });
     }
   } finally {

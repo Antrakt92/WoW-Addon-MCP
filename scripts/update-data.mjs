@@ -1,12 +1,17 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { parseArgs } from 'node:util';
 import { channelProfile } from '../src/channels.mjs';
 
 const repository = 'https://github.com/Gethe/wow-ui-source.git';
-const channelIndex = process.argv.indexOf('--channel');
-const channel = channelIndex < 0 ? 'retail' : process.argv[channelIndex + 1];
-if (channelIndex >= 0 && !channel) throw new Error('--channel requires retail or forever');
+const { values: options } = parseArgs({
+  options: {
+    channel: { type: 'string', default: 'retail' },
+    'allow-partial-resources': { type: 'boolean' },
+  },
+});
+const { channel } = options;
 const { branch } = channelProfile(channel);
 const sourceRoot = path.resolve('.cache', channel === 'retail' ? 'wow-ui-source' : 'wow-ui-forever');
 
@@ -44,4 +49,4 @@ if (!existsSync(path.join(sourceRoot, '.git'))) {
 }
 
 run(process.execPath, ['scripts/build-dataset.mjs', '--source', sourceRoot, '--channel', channel,
-  ...(process.argv.includes('--allow-partial-resources') ? ['--allow-partial-resources'] : [])]);
+  ...(options['allow-partial-resources'] ? ['--allow-partial-resources'] : [])]);

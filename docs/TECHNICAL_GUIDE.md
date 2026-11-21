@@ -222,6 +222,11 @@ npm run pack:check
 node scripts/build-dataset.mjs --source /path/to/wow-ui-source
 ```
 
+Use a clean Git checkout for source extraction. A supplied `--client-version`
+must agree with the source revision. Builds acquire a lock for the target
+manifest. After a forced interruption, verify the process has stopped,
+remove the stale `.lock` file, and rebuild the catalog before using it.
+
 Forever uses `.cache/wow-ui-forever` and a separate manifest and archives under `data/forever/`. Its known ambiguous include requires explicit partial-resource extraction:
 
 ```shell
