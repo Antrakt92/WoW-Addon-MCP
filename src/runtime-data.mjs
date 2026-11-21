@@ -14,7 +14,7 @@ export const runtimeSchema = z.object({
     clientVersion: z.string().regex(/^\d+\.\d+\.\d+\.\d+$/),
     locale: z.enum(['deDE', 'enUS', 'esES', 'esMX', 'frFR', 'itIT', 'koKR', 'ptBR', 'ruRU', 'zhCN', 'zhTW']),
     collectorVersion: z.literal('1'),
-    capturedAt: z.string().datetime(), interfaceVersion: z.number().int().positive(), projectId: z.literal(1),
+    capturedAt: z.string().datetime(), interfaceVersion: z.number().int().positive(), projectId: z.literal([1, 18]),
   }).strict(),
   requested: z.object({ cvars: names, atlases: names, symbols: names, globalStrings: names }).strict(),
   records: z.object({
@@ -31,6 +31,10 @@ export const runtimeSchema = z.object({
 }).strict().superRefine((data, context) => {
   if (!matchesChannel(data.source.clientVersion, data.source.channel)) {
     context.addIssue({ code: 'custom', path: ['source', 'channel'], message: 'Client version does not match the snapshot channel' });
+  }
+  const expectedProjectId = data.source.channel === 'forever' ? 18 : 1;
+  if (data.source.projectId !== expectedProjectId) {
+    context.addIssue({ code: 'custom', path: ['source', 'projectId'], message: 'Client project does not match the snapshot channel' });
   }
   for (const kind of Object.keys(data.records)) {
     const requested = new Set(data.requested[kind]);

@@ -18,7 +18,7 @@ The initial resource archive is explicitly partial. [Camelot/EquipmentFlyout.xml
 
 ## Runtime observations and curated contracts
 
-The collector supports Retail and the reviewed Forever `1.60.x` version family, records a separate channel, and declares both interface versions in its TOC. Repeat `--runtime-data` to load observations for both games in one process. Runtime queries require a matching channel and exact client version; specify locale when multiple locales match. Duplicate channel/build/locale imports are rejected. The client project identifier alone is insufficient to distinguish these Mainline-family clients.
+The collector supports Retail and the reviewed Forever `1.60.x` version family, records a separate channel, and declares their interfaces in its TOC. It checks the version together with the project identifier, Mainline (1) for Retail and Camelot (18) for Forever. Repeat `--runtime-data` to load observations for both games in one process. Runtime queries require a matching channel and exact client version. Specify the locale when multiple locales match. Duplicate channel/build/locale imports are rejected.
 
 Collector tests use mocked game APIs. Loading the addon, its export window, actual project identification, and observations in and out of combat still require beta-client validation. This release does not claim in-client testing. Curated engine contracts remain tied to their reviewed Retail build; no Forever applicability is inferred.
 

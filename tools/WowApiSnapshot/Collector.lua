@@ -51,13 +51,17 @@ local function globalString(name)
 end
 
 function addon.collect(request)
-  assert(WOW_PROJECT_ID == WOW_PROJECT_MAINLINE, "Use a supported Retail or Forever client")
-  validate(request)
   local version, build, _, interfaceVersion = GetBuildInfo()
-  local forever = version:match("^1%.60%.") ~= nil
-  assert(forever or (tonumber(version:match("^(%d+)")) or 0) >= 10, "Use a supported Retail or Forever client")
+  local channel
+  if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and (tonumber(version:match("^(%d+)")) or 0) >= 10 then
+    channel = "retail"
+  elseif WOW_PROJECT_CAMELOT and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT and version:match("^1%.60%.") then
+    channel = "forever"
+  end
+  assert(channel, "Use a supported Retail or Forever client")
+  validate(request)
   local result = { schemaVersion = 1,
-    source = { kind = "wow-client-observation", channel = forever and "forever" or "retail", clientVersion = version .. "." .. build,
+    source = { kind = "wow-client-observation", channel = channel, clientVersion = version .. "." .. build,
       locale = GetLocale(), collectorVersion = "1", capturedAt = date("!%Y-%m-%dT%H:%M:%SZ"),
       interfaceVersion = interfaceVersion, projectId = WOW_PROJECT_ID },
     requested = {}, records = {}, failed = {}, missing = {} }

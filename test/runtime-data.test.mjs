@@ -10,11 +10,11 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { channelManifest } from '../src/channels.mjs';
 
 const source = await readFile(new URL('../tools/WowApiSnapshot/Collector.lua', import.meta.url), 'utf8');
-function collect(request, version = '12.1.0', build = '69587', interfaceVersion = 120100) {
+function collect(request, version = '12.1.0', build = '69587', interfaceVersion = 120100, projectId = 1) {
   const state = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(state);
   const script = String.raw`
-    WOW_PROJECT_ID, WOW_PROJECT_MAINLINE = 1, 1
+    WOW_PROJECT_ID, WOW_PROJECT_MAINLINE, WOW_PROJECT_CAMELOT = ${projectId}, 1, 18
     function GetBuildInfo() return "${version}", "${build}", "Aug 27 2026", ${interfaceVersion} end
     function GetLocale() return "enUS" end
     function date() return "2026-09-05T15:00:00Z" end
@@ -41,6 +41,12 @@ function collect(request, version = '12.1.0', build = '69587', interfaceVersion 
     assert.equal(status, lua.LUA_OK, to_jsstring(lua.lua_tostring(state, -1)));
     return to_jsstring(lua.lua_tostring(state, -1));
   } finally { lua.lua_close(state); }
+}
+
+function collectForCatalog(request, entry, channel) {
+  const [major, minor, patch, build] = entry.clientVersion.split('.');
+  const interfaceVersion = Number(major) * 10000 + Number(minor) * 100 + Number(patch);
+  return JSON.parse(collect(request, entry.version, build, interfaceVersion, channel === 'forever' ? 18 : 1));
 }
 
 test('Lua collector exports only requested metadata, preserves text, and omits current settings', () => {
@@ -71,12 +77,18 @@ test('empty collector arrays remain arrays and invalid requests fail', () => {
 
 test('Forever collector and runtime schema preserve channel identity and reject cross-channel observations', () => {
   const request = '{cvars={"example"}, atlases={}, symbols={}, globalStrings={}}';
-  const snapshot = runtimeSchema.parse(JSON.parse(collect(request, '1.60.1', '69913', 16001)));
+  const snapshot = runtimeSchema.parse(JSON.parse(collect(request, '1.60.1', '69913', 16001, 18)));
   assert.equal(snapshot.source.channel, 'forever');
+  assert.equal(snapshot.source.projectId, 18);
   const info = { channel: 'forever', clientVersion: '1.60.1.69913' };
   assert.equal(runtimeLookup(snapshot, 'example', 'cvar', info).entry.defaultValue, '1');
   assert.equal(runtimeLookup(snapshot, 'example', 'cvar', { ...info, channel: 'retail' }).available, false);
   assert.equal(runtimeSchema.safeParse({ ...snapshot, source: { ...snapshot.source, channel: 'retail' } }).success, false);
+  assert.equal(runtimeSchema.safeParse({ ...snapshot, source: { ...snapshot.source, projectId: 1 } }).success, false);
+  const retail = JSON.parse(collect(request));
+  assert.equal(runtimeSchema.safeParse({ ...retail, source: { ...retail.source, projectId: 18 } }).success, false);
+  assert.throws(() => collect(request, '1.60.1', '69913', 16001, 1), /supported Retail or Forever/);
+  assert.throws(() => collect(request, '12.1.0', '69587', 120100, 18), /supported Retail or Forever/);
   assert.throws(() => collect(request, '1.15.9', '69722', 11509), /supported Retail or Forever/);
 });
 
@@ -109,10 +121,7 @@ for (const channel of ['retail', 'forever']) test(`${channel} CLI serves a colle
   const file = path.join(directory, 'snapshot.json');
   const manifest = JSON.parse(await readFile(channelManifest(channel), 'utf8'));
   const current = manifest.versions.find((entry) => entry.version === manifest.default);
-  const snapshot = JSON.parse(collect('{cvars={"example","missing","failed"}, atlases={}, symbols={}, globalStrings={"EXAMPLE_LOCALIZED"}}'));
-  snapshot.source.clientVersion = current.clientVersion;
-  snapshot.source.channel = channel;
-  snapshot.source.interfaceVersion = channel === 'forever' ? 16001 : 120100;
+  const snapshot = collectForCatalog('{cvars={"example","missing","failed"}, atlases={}, symbols={}, globalStrings={"EXAMPLE_LOCALIZED"}}', current, channel);
   await writeFile(file, JSON.stringify(snapshot));
   const client = new Client({ name: 'runtime-integration', version: '1.0.0' });
   const transport = new StdioClientTransport({ command: process.execPath,
@@ -141,10 +150,7 @@ test('one MCP process routes multiple runtime files by channel/build and require
     const manifest = JSON.parse(await readFile(channelManifest(channel), 'utf8'));
     const current = manifest.versions.find((entry) => entry.version === manifest.default);
     entries[channel] = { ...current, channel };
-    const snapshot = JSON.parse(collect('{cvars={"example"}, atlases={}, symbols={}, globalStrings={}}'));
-    snapshot.source.channel = channel;
-    snapshot.source.clientVersion = current.clientVersion;
-    snapshot.source.interfaceVersion = channel === 'forever' ? 16001 : 120100;
+    const snapshot = collectForCatalog('{cvars={"example"}, atlases={}, symbols={}, globalStrings={}}', current, channel);
     snapshot.records.cvars[0].defaultValue = channel;
     const file = path.join(directory, channel + '.json');
     await writeFile(file, JSON.stringify(snapshot));
