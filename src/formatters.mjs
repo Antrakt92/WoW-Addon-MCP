@@ -56,13 +56,31 @@ export function formatMatches(matches, info) {
   return `${header}${note}${matches.map(({ entryKind, entry }) => formatEntry(entryKind, entry, info?.commit ?? info?.selected?.commit)).join('\n\n---\n\n')}`;
 }
 
+export function withResourceLink(entry, commit) {
+  return {
+    ...entry,
+    sourceUrl: `https://github.com/Gethe/wow-ui-source/blob/${commit}/${entry.sourceFile}#L${entry.sourceLine}`,
+  };
+}
+
+export function formatApiSourceEvidence(evidence) {
+  const { status, coverage, totalMatches, matches } = evidence;
+  const summary = {
+    source_matches: `${totalMatches} exact symbol matches in the source index (coverage: ${coverage}). Showing ${matches.length}.`,
+    no_source_match: `No exact symbol match in the source index (coverage: ${coverage}).`,
+    source_unavailable: 'No source archive is available for this snapshot.',
+    source_error: 'The source archive could not be read or validated. Use lookup_resource for details.',
+  }[status];
+  return ['### FrameXML evidence', summary,
+    ...matches.map(({ sourceKind, sourceUrl }) => `- ${sourceKind}: ${sourceUrl}`),
+    'Runtime availability, signatures and restrictions require separate evidence.',
+  ].join('\n');
+}
+
 export function formatResources(result, info) {
   const header = `Dataset: ${datasetLabel(info)}\n\n`;
   if (!result.available) return `${header}Supplementary resources were not collected for this snapshot. This does not establish that a resource was absent from that client.`;
-  const entries = result.entries.map((entry) => ({
-    ...entry,
-    sourceUrl: `https://github.com/Gethe/wow-ui-source/blob/${info.commit}/${entry.sourceFile}#L${entry.sourceLine}`,
-  }));
+  const entries = result.entries.map((entry) => withResourceLink(entry, info.commit));
   const partial = result.coverage?.status === 'partial' ? 'Partial source coverage: inspect coverage.issues. Missing results do not establish absence.\n\n' : '';
   return `${header}${partial}Blizzard source inventory: declarations and references, not a runtime availability or safety guarantee. Parameter names do not establish types, optionality, or returns. CVar and atlas entries are usage references, not complete registries.\n\n${JSON.stringify({ ...result, entries }, null, 2)}`;
 }

@@ -9,6 +9,7 @@ import { loadRuntimeSnapshots, runtimeLookup } from './runtime-data.mjs';
 import { localClientBuilds } from './local-client-builds.mjs';
 import {
   datasetLabel,
+  formatApiSourceEvidence,
   formatComparison,
   formatEntry,
   formatHistory,
@@ -17,6 +18,7 @@ import {
   formatResources,
   formatVersionDiff,
   formatVersions,
+  withResourceLink,
 } from './formatters.mjs';
 import { apiHistory, compareApi, diffVersions } from './version-tools.mjs';
 
@@ -36,6 +38,12 @@ const catalogEntry = z.object({
   sourceUrl: z.string(),
 });
 const batchStatus = z.enum(['found', 'short_name_only', 'curated', 'missing']);
+const sourceEvidenceSchema = z.object({
+  status: z.enum(['source_matches', 'no_source_match', 'source_unavailable', 'source_error']),
+  coverage: z.enum(['complete', 'partial', 'unknown']),
+  totalMatches: z.number().int().nonnegative(),
+  matches: z.array(z.object({ sourceKind: z.string(), sourceUrl: z.string() })),
+});
 
 function textResponse(text) {
   return { content: [{ type: 'text', text }] };
@@ -50,6 +58,28 @@ function lookup(store, curated, info, name, kind) {
   }
   const matches = store.lookup(name, kind);
   return { status: matches.length ? 'short_name_only' : 'missing', matches };
+}
+
+async function apiSourceEvidence(catalog, info, name, kind, status) {
+  if ((kind && kind !== 'function') || (status !== 'missing' && status !== 'short_name_only')) return undefined;
+  let resources;
+  try {
+    resources = await catalog.lookupResources(name, { version: info.clientVersion, kind: 'symbol', exact: true, limit: 3 });
+  } catch {
+    return { status: 'source_error', coverage: 'unknown', totalMatches: 0, matches: [] };
+  }
+  if (!resources.available) {
+    return { status: 'source_unavailable', coverage: 'unknown', totalMatches: 0, matches: [] };
+  }
+  return {
+    status: resources.total ? 'source_matches' : 'no_source_match',
+    coverage: resources.coverage?.status ?? 'unknown',
+    totalMatches: resources.total,
+    matches: resources.entries.map((entry) => {
+      const { sourceKind, sourceUrl } = withResourceLink(entry, info.commit);
+      return { sourceKind, sourceUrl };
+    }),
+  };
 }
 
 export async function createServer({ manifestPath, channel: restrictedChannel, packageVersion, runtimeDataPath = process.env.WOW_API_RUNTIME_DATA } = {}) {
@@ -143,7 +173,7 @@ export async function createServer({ manifestPath, channel: restrictedChannel, p
   });
 
   server.registerTool('lookup_api', {
-    description: 'Look up an exact WoW API function, method, event, enum, structure, widget, or system in one patch in the selected channel.',
+    description: 'Look up a WoW API or object in the selected build. If an exact function declaration is missing, also check exact symbol matches in the same build’s FrameXML index.',
     annotations: READ_ONLY,
     inputSchema: {
       name: z.string().trim().min(1).describe('Exact full or short name, for example C_UnitAuras.GetAuraDataByIndex or AuraContainer'),
@@ -158,11 +188,13 @@ export async function createServer({ manifestPath, channel: restrictedChannel, p
     if (result.status === 'curated') {
       return textResponse(`Dataset: ${datasetLabel(info)}\n\nCommunity-curated engine contract; separate from generated Blizzard documentation.\n\n${JSON.stringify(result.supplemental, null, 2)}`);
     }
-    return textResponse(formatMatches(result.matches, info));
+    const text = formatMatches(result.matches, info);
+    const evidence = await apiSourceEvidence(catalog, info, name, kind, result.status);
+    return textResponse(evidence ? `${text}\n\n${formatApiSourceEvidence(evidence)}` : text);
   });
 
   server.registerTool('lookup_apis', {
-    description: 'Look up up to eight API names on one or two explicit channel/build targets in one call. Returns raw signatures and restriction metadata, pinned source links, and distinct exact, short-name-only, curated and missing statuses. A short-name match does not establish a global API.',
+    description: 'Look up up to eight API names on one or two explicit channel/build targets. Returns signatures, restrictions, and catalog status. Missing exact function declarations also return separate FrameXML evidence for the same build when available.',
     annotations: READ_ONLY,
     inputSchema: {
       names: z.array(z.string().trim().min(1).max(256)).min(1).max(8),
@@ -180,6 +212,7 @@ export async function createServer({ manifestPath, channel: restrictedChannel, p
           matches: z.array(catalogEntry),
           totalMatches: z.number().int().nonnegative(),
           curated: z.record(z.string(), z.unknown()).optional(),
+          sourceEvidence: sourceEvidenceSchema.optional(),
         })),
       })),
     },
@@ -192,16 +225,18 @@ export async function createServer({ manifestPath, channel: restrictedChannel, p
     const result = {
       targets: await Promise.all(resolved.map(async ({ catalog, info }) => {
         const store = await catalog.store(info.version);
-        const results = names.map((name) => {
+        const results = await Promise.all(names.map(async (name) => {
           const { status, matches = [], supplemental } = lookup(store, curated, info, name, kind);
+          const sourceEvidence = await apiSourceEvidence(catalog, info, name, kind, status);
           return {
             name, status, totalMatches: matches.length,
             matches: matches.slice(0, 5).map(({ entryKind, entry }) => ({
               entryKind, entry, sourceUrl: `https://github.com/Gethe/wow-ui-source/blob/${info.commit}/${entry.sourceFile}`,
             })),
             ...(supplemental ? { curated: supplemental } : {}),
+            ...(sourceEvidence ? { sourceEvidence } : {}),
           };
-        });
+        }));
         return { channel: info.channel, clientVersion: info.clientVersion, commit: info.commit, results };
       })),
     };

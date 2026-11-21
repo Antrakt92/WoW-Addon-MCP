@@ -141,7 +141,9 @@ Resolve your exact versions with `get_local_client_builds` or `list_versions`. T
 }
 ```
 
-Each result marks `found`, `short_name_only`, `curated`, or `missing`. The batch returns up to five matches per name and reports the total. Use a qualified name to disambiguate short-name candidates. A missing entry means the generated catalog has no match. Use `lookup_resource` to check Blizzard source references. Clients that read structured MCP responses can use `structuredContent.targets` directly.
+Each result marks `found`, `short_name_only`, `curated`, or `missing`. The batch returns up to five matches per name and reports the total. Use a qualified name to disambiguate short-name candidates. Clients that read structured MCP responses can use `structuredContent.targets` directly.
+
+For function lookups without an exact declaration, `lookup_api` and `lookup_apis` also check exact symbol matches in the selected build’s FrameXML index. The catalog status stays separate from the source result. For example, `GetQuestLogQuestText` can return `missing` in the API catalog and still link to Blizzard call sites. The source evidence includes up to three pinned links, the total, and index coverage. Empty or unavailable results leave runtime availability undetermined. Use `lookup_resource` for additional matches and coverage details.
 
 ## Optional local runtime observations
 

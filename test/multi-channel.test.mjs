@@ -5,8 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { fileURLToPath } from 'node:url';
 import { loadCatalog } from '../src/data-store.mjs';
+import { createServer } from '../src/server.mjs';
 import { compareApi, diffVersions } from '../src/version-tools.mjs';
 
 const retail = await loadCatalog();
@@ -68,7 +71,7 @@ test('default MCP exposes both channels with required per-call targets and no im
 
     const request = {
       targets: [retail, forever].map((catalog) => ({ channel: catalog.entry().channel, version: catalog.entry().clientVersion })),
-      names: ['UnitStat', 'GetAuraDataByIndex', 'PLAYER_LOGIN', 'NotAnApiAtAll'],
+      names: ['UnitStat', 'GetAuraDataByIndex', 'PLAYER_LOGIN', 'NotAnApiAtAll', 'GetQuestLogQuestText'],
     };
     const batch = await client.callTool({ name: 'lookup_apis', arguments: request });
     assert.ok(!batch.isError, batch.content[0]?.text);
@@ -78,11 +81,19 @@ test('default MCP exposes both channels with required per-call targets and no im
       assert.equal(side.channel, entry.channel);
       assert.equal(side.clientVersion, entry.clientVersion);
       assert.equal(side.commit, entry.commit);
-      assert.deepEqual(side.results.map((item) => item.status), ['found', 'short_name_only', 'found', 'missing']);
+      assert.deepEqual(side.results.map((item) => item.status), ['found', 'short_name_only', 'found', 'missing', 'missing']);
       assert.equal(side.results[0].matches[0].entry.metadata.SecretWhenUnitStatsRestricted, true);
       assert.ok(side.results[0].matches[0].sourceUrl.includes(entry.commit));
       assert.equal(side.results[2].matches[0].entryKind, 'event');
       assert.deepEqual(side.results[3].matches, []);
+      assert.equal(side.results[0].sourceEvidence, undefined);
+      assert.equal(side.results[3].sourceEvidence.status, 'no_source_match');
+      const source = side.results[4].sourceEvidence;
+      assert.equal(source.status, 'source_matches');
+      assert.equal(source.coverage, index === 0 ? 'complete' : 'partial');
+      assert.ok(source.totalMatches > source.matches.length);
+      assert.ok(source.matches.every((match) => match.sourceKind === 'framexml-reference'
+        && match.sourceUrl.includes(`/blob/${entry.commit}/`) && /#L\d+$/.test(match.sourceUrl)));
     }
     for (const [name, symbol] of [['lookup_engine_api', 'CreateFrame'], ['get_migration_guidance', 'UnitAura']]) {
       const evidence = JSON.parse((await call(name, { channel: 'retail', version: '12.1.0.69587', name: symbol })).split('\n\n')[1]);
@@ -106,6 +117,12 @@ test('default MCP exposes both channels with required per-call targets and no im
       assert.equal(failure.structuredContent, undefined);
     }
     for (const target of request.targets) {
+      const legacy = await call('lookup_api', { ...target, name: 'GetQuestLogQuestText', kind: 'function' });
+      assert.match(legacy, /No matching WoW API entries found/);
+      assert.match(legacy, /FrameXML evidence/);
+      assert.match(legacy, /QuestInfo\.lua#L\d+/);
+      const wrongKind = await call('lookup_api', { ...target, name: 'GetQuestLogQuestText', kind: 'event' });
+      assert.doesNotMatch(wrongKind, /FrameXML evidence/);
       const widget = await call('get_widget_methods', { ...target, name: 'Frame' });
       assert.match(widget, /Inherits:/);
       assert.match(widget, /Frame:GetBoundsRect\(\).*ConditionalSecret/);
@@ -163,6 +180,43 @@ test('default MCP exposes both channels with required per-call targets and no im
       assert.equal((await client.callTool({ name, arguments: { ...args, ...incomplete } })).isError, true);
     }
   } finally { await client.close(); }
+});
+
+test('unavailable or broken FrameXML archives preserve independent API lookup results', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wow-mcp-source-evidence-'));
+  const manifestPath = path.join(root, 'manifest.json');
+  const { resourceFile: _, ...entry } = retail.entry();
+  const file = fileURLToPath(retail.datasetPath(entry));
+  try {
+    for (const [resourceFile, status] of [[undefined, 'source_unavailable'], ['absent.json.gz', 'source_error']]) {
+      await writeFile(manifestPath, JSON.stringify({
+        schemaVersion: 1, channel: 'retail', default: entry.version,
+        versions: [{ ...entry, resourceFile, file }],
+      }));
+      const { server } = await createServer({ manifestPath, runtimeDataPath: [] });
+      const client = new Client({ name: 'source-evidence-test', version: '1' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      try {
+        await server.connect(serverTransport);
+        await client.connect(clientTransport);
+        const result = await client.callTool({ name: 'lookup_apis', arguments: {
+          targets: [{ channel: 'retail', version: entry.clientVersion }], names: ['UnitStat', 'GetQuestLogQuestText'],
+        } });
+        assert.ok(!result.isError, result.content[0]?.text);
+        const [documented, missing] = result.structuredContent.targets[0].results;
+        assert.equal(documented.status, 'found');
+        assert.equal(documented.sourceEvidence, undefined);
+        assert.equal(missing.status, 'missing');
+        assert.deepEqual(missing.sourceEvidence, { status, coverage: 'unknown', totalMatches: 0, matches: [] });
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    }
+  } finally {
+    await rm(manifestPath, { force: true });
+    await rmdir(root);
+  }
 });
 
 test('local build report keeps exact matches, stale snapshots and missing clients distinct', { timeout: 20_000 }, async () => {
