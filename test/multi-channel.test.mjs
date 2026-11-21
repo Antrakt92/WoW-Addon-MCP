@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, rmdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -19,7 +22,7 @@ test('default MCP exposes both channels with required per-call targets and no im
       return result.content[0].text;
     };
     const { tools } = await client.listTools();
-    const singleBuild = tools.filter((tool) => !['list_versions', 'get_api_history', 'compare_api', 'diff_versions'].includes(tool.name));
+    const singleBuild = tools.filter((tool) => !['list_versions', 'get_api_history', 'compare_api', 'diff_versions', 'get_local_client_builds'].includes(tool.name));
     assert.equal(singleBuild.length, 13);
     for (const tool of singleBuild) {
       assert.ok(tool.inputSchema.required.includes('channel'), tool.name);
@@ -94,6 +97,55 @@ test('default MCP exposes both channels with required per-call targets and no im
       assert.equal((await client.callTool({ name, arguments: { ...args, ...incomplete } })).isError, true);
     }
   } finally { await client.close(); }
+});
+
+test('local build report keeps exact matches, stale snapshots and missing clients distinct', { timeout: 20_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wow-mcp-'));
+  const client = new Client({ name: 'local-build-test', version: '1' });
+  try {
+    const retailVersion = retail.entry().clientVersion;
+    const foreverVersion = forever.entry().clientVersion;
+    const metadata = path.join(root, '.build.info');
+    const writeMetadata = (rows) => writeFile(metadata, '\uFEFFProduct!STRING:0|Active!DEC:1|Version!STRING:0\r\n' + rows.join('\r\n'));
+    await writeMetadata([`wow|1|${retailVersion}`, 'wowf|0|1.60.1.1', `wowf|1|${foreverVersion}`, 'wowt|1|12.1.7.1']);
+    for (const directory of ['_retail_', '_forever_']) {
+      await mkdir(path.join(root, directory));
+      await writeFile(path.join(root, directory, 'Wow.exe'), '');
+    }
+    await client.connect(new StdioClientTransport({
+      command: process.execPath, args: ['src/cli.mjs'], cwd: process.cwd(), stderr: 'pipe', env: { WOW_INSTALL_ROOT: root },
+    }));
+    const report = async () => {
+      const result = await client.callTool({ name: 'get_local_client_builds' });
+      assert.ok(!result.isError, result.content[0]?.text);
+      return JSON.parse(result.content[0].text);
+    };
+    const matched = await report();
+    assert.deepEqual(matched.map((row) => [row.channel, row.installedVersion, row.status, row.exactCatalogCommit]), [
+      ['retail', retailVersion, 'exact_match', retail.entry().commit],
+      ['forever', foreverVersion, 'exact_match', forever.entry().commit],
+    ]);
+    await writeMetadata([`wow|1|${retailVersion}`, 'wowf|1|1.60.1.1']);
+    const [, stale] = await report();
+    assert.equal(stale.status, 'build_not_cataloged');
+    assert.equal(stale.latestCatalogVersion, foreverVersion);
+    assert.equal(stale.exactCatalogCommit, null);
+    await writeMetadata([`wow|1|${retailVersion}`, 'wowf|1|1.60.1.1', `wowf|1|${foreverVersion}`]);
+    assert.equal((await report())[1].status, 'build_metadata_unavailable');
+    await rm(path.join(root, '_forever_', 'Wow.exe'));
+    assert.equal((await report())[1].status, 'client_not_found');
+  } finally {
+    await client.close();
+    await rm(path.join(root, '.build.info'), { force: true });
+    for (const directory of ['_retail_', '_forever_']) {
+      await rm(path.join(root, directory, 'Wow.exe'), { force: true });
+    }
+    // Temporary directories contain only the known fixture paths above.
+    for (const directory of ['_retail_', '_forever_']) {
+      await rmdir(path.join(root, directory)).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+    }
+    await rmdir(root);
+  }
 });
 
 test('cross-channel comparisons preserve direction, exact identities, and target restrictions', async () => {

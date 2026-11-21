@@ -177,6 +177,20 @@ The official Blizzard documentation tables mirrored by Gethe are the API authori
 
 ## Local development
 
+Run the local checkout with `node src/cli.mjs` after `npm ci`. In your MCP
+client, set the command to the Node executable and pass the absolute path to
+`src/cli.mjs` as its argument.
+
+Set `WOW_INSTALL_ROOT` to the Windows World of Warcraft installation directory
+containing `.build.info`, `_retail_` and `_forever_`. Call
+`get_local_client_builds` to compare the launcher's active Retail and Forever
+versions with the catalog. For an exact match, pass the returned
+`installedVersion` to build-specific lookups. If the build is missing, the
+report shows the latest catalog version and commit so you can decide whether
+to refresh the catalog from a matching source checkout. The report uses
+launcher metadata and an executable presence check. It does not query a
+running game.
+
 ```shell
 npm ci
 npm run data:update
