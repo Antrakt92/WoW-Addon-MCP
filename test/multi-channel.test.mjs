@@ -22,7 +22,7 @@ test('default MCP exposes both channels with required per-call targets and no im
       return result.content[0].text;
     };
     const { tools } = await client.listTools();
-    const singleBuild = tools.filter((tool) => !['list_versions', 'get_api_history', 'compare_api', 'diff_versions', 'get_local_client_builds'].includes(tool.name));
+    const singleBuild = tools.filter((tool) => !['list_versions', 'get_api_history', 'compare_api', 'diff_versions', 'get_local_client_builds', 'lookup_apis'].includes(tool.name));
     assert.equal(singleBuild.length, 13);
     for (const tool of singleBuild) {
       assert.ok(tool.inputSchema.required.includes('channel'), tool.name);
@@ -65,6 +65,53 @@ test('default MCP exposes both channels with required per-call targets and no im
       assert.ok(result.includes(entry.clientVersion), name);
       assert.ok(result.includes(entry.commit), name);
     })));
+
+    const request = {
+      targets: [retail, forever].map((catalog) => ({ channel: catalog.entry().channel, version: catalog.entry().clientVersion })),
+      names: ['UnitStat', 'GetAuraDataByIndex', 'PLAYER_LOGIN', 'NotAnApiAtAll'],
+    };
+    const batch = await client.callTool({ name: 'lookup_apis', arguments: request });
+    assert.ok(!batch.isError, batch.content[0]?.text);
+    assert.deepEqual(JSON.parse(batch.content[0].text), batch.structuredContent);
+    for (const [index, side] of batch.structuredContent.targets.entries()) {
+      const entry = [retail, forever][index].entry();
+      assert.equal(side.channel, entry.channel);
+      assert.equal(side.clientVersion, entry.clientVersion);
+      assert.equal(side.commit, entry.commit);
+      assert.deepEqual(side.results.map((item) => item.status), ['found', 'short_name_only', 'found', 'missing']);
+      assert.equal(side.results[0].matches[0].entry.metadata.SecretWhenUnitStatsRestricted, true);
+      assert.ok(side.results[0].matches[0].sourceUrl.includes(entry.commit));
+      assert.equal(side.results[2].matches[0].entryKind, 'event');
+      assert.deepEqual(side.results[3].matches, []);
+    }
+    for (const [name, symbol] of [['lookup_engine_api', 'CreateFrame'], ['get_migration_guidance', 'UnitAura']]) {
+      const evidence = JSON.parse((await call(name, { channel: 'retail', version: '12.1.0.69587', name: symbol })).split('\n\n')[1]);
+      assert.equal(evidence.available, true);
+      assert.equal(evidence.entry.name, symbol);
+      assert.equal(evidence.selectedClientVersion, '12.1.0.69587');
+      const current = JSON.parse((await call(name, { channel: 'retail', version: 'latest', name: symbol })).split('\n\n')[1]);
+      assert.equal(current.available, false);
+    }
+    for (const invalid of [
+      { ...request, names: [] },
+      { ...request, names: [' '] },
+      { ...request, names: Array(9).fill('UnitStat') },
+      { ...request, targets: [] },
+      { ...request, targets: [...request.targets, request.targets[0]] },
+      { ...request, targets: [{ version: request.targets[0].version }] },
+      { ...request, targets: [request.targets[0], { channel: 'forever', version: request.targets[0].version }] },
+    ]) {
+      const failure = await client.callTool({ name: 'lookup_apis', arguments: invalid });
+      assert.equal(failure.isError, true, JSON.stringify(invalid));
+      assert.equal(failure.structuredContent, undefined);
+    }
+    for (const target of request.targets) {
+      const widget = await call('get_widget_methods', { ...target, name: 'Frame' });
+      assert.match(widget, /Inherits:/);
+      assert.match(widget, /Frame:GetBoundsRect\(\).*ConditionalSecret/);
+      const absentNamespace = await call('get_namespace', { ...target, namespace: 'C_NoSuchNamespace' });
+      assert.match(absentNamespace, /No matching namespace.*search_api/);
+    }
     const info = JSON.parse(await call('get_dataset_info', { channel: 'forever', version: 'latest' }));
     assert.equal(info.selected.clientVersion, forever.entry().clientVersion);
     const missing = await call('lookup_api', { name: 'NotAnApiAtAll', channel: 'forever', version: 'latest' });
@@ -137,7 +184,8 @@ test('local build report keeps exact matches, stale snapshots and missing client
     const report = async () => {
       const result = await client.callTool({ name: 'get_local_client_builds' });
       assert.ok(!result.isError, result.content[0]?.text);
-      return JSON.parse(result.content[0].text);
+      assert.deepEqual(result.structuredContent.clients, JSON.parse(result.content[0].text));
+      return result.structuredContent.clients;
     };
     const matched = await report();
     assert.deepEqual(matched.map((row) => [row.channel, row.installedVersion, row.status, row.exactCatalogCommit]), [

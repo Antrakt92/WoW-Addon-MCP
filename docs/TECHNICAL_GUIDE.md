@@ -77,6 +77,7 @@ The server exposes these tools:
 | `get_dataset_info` | Resolve a version and show its WoW build, upstream commit, and entry counts |
 | `list_versions` | List both catalogs with exact builds and commits; optionally filter by channel |
 | `lookup_api` | Exact lookup across functions, methods, events, enums, structures, widgets, and systems |
+| `lookup_apis` | Look up up to eight names on one or two exact targets in one call, with structured matches and pinned sources |
 | `search_api` | Ranked name and official-documentation search |
 | `get_namespace` | List a namespace's functions, events, and types |
 | `get_widget_methods` | Show direct and inherited widget methods |
@@ -124,7 +125,23 @@ Forever resources use the Mainline family and Camelot game filters. The initial 
 
 Definitions come from source, not execution: call-site references do not establish engine signatures or addon-safe access. Parameter names on Lua definitions do not establish types, optionality, or returns. XML child names containing `$parent` are patterns, and template children are not automatically instantiated global frames. CVar and atlas source results are usage references rather than complete registries or defaults. See [the source audit](SOURCE_AUDIT.md) for scope and remaining gaps.
 
-The curated layer documents `CreateFrame`, `hooksecurefunc`, `issecurevariable`, and `issecure`, plus `UnitAura` migration guidance. It applies only to reviewed build `12.1.0.69587`; future builds require another review. `lookup_api` uses an applicable curated contract when no exact generated API exists. Search, history, and diffs continue to describe generated documentation coverage, which does not prove runtime introduction or removal. Curated records include immutable source revisions, attribution, and their separate CC BY-SA 4.0 license.
+The curated layer documents `CreateFrame`, `hooksecurefunc`, `issecurevariable`, and `issecure`, plus `UnitAura` migration guidance. It applies only to reviewed Retail build `12.1.0.69587`. Pass that full build to `lookup_engine_api` or `get_migration_guidance` even if the generated catalog carries a newer snapshot of that patch. The response labels community evidence and indicates when generated data for the exact build is unavailable. `lookup_api` uses an applicable curated contract when no exact generated API exists. Search, history, and diffs describe generated documentation coverage. Curated records include immutable source revisions, attribution, and their separate CC BY-SA 4.0 license.
+
+### Query both clients together
+
+Resolve your exact versions with `get_local_client_builds` or `list_versions`. Then pass the name list and the channel/version pairs to `lookup_apis`:
+
+```json
+{
+  "names": ["UnitStat", "C_UnitAuras.GetAuraDataByIndex", "PLAYER_LOGIN"],
+  "targets": [
+    {"channel": "retail", "version": "12.1.5.70961"},
+    {"channel": "forever", "version": "1.60.1.70959"}
+  ]
+}
+```
+
+Each result marks `found`, `short_name_only`, `curated`, or `missing`. The batch returns up to five matches per name and reports the total. Use a qualified name to disambiguate short-name candidates. A missing entry means the generated catalog has no match. Use `lookup_resource` to check Blizzard source references. Clients that read structured MCP responses can use `structuredContent.targets` directly.
 
 ## Optional local runtime observations
 
@@ -188,8 +205,9 @@ versions with the catalog. For an exact match, pass the returned
 `installedVersion` to build-specific lookups. If the build is missing, the
 report shows the latest catalog version and commit so you can decide whether
 to refresh the catalog from a matching source checkout. The report uses
-launcher metadata and an executable presence check. It does not query a
-running game.
+launcher metadata and an executable presence check. `exact_match` describes a
+catalog match to the launcher metadata. Clients can read the same rows from
+`structuredContent.clients`.
 
 ```shell
 npm ci

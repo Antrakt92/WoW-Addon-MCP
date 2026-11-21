@@ -45,6 +45,7 @@ export async function localClientBuilds(root, catalogs) {
       ...result,
       installedVersion: version,
       installedVersionSource: '.build.info',
+      versionEvidence: 'launcher_metadata',
       status: exact ? 'exact_match' : 'build_not_cataloged',
       exactCatalogCommit: exact?.commit ?? null,
     };

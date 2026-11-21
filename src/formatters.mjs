@@ -21,10 +21,16 @@ function typeOf(value) {
   return `${container}${value.Nilable ? '?' : ''}`;
 }
 
+function methodField(value) {
+  const { Name, Type, InnerType, Nilable, ...metadata } = value;
+  const flags = Object.keys(metadata).length ? ` ${JSON.stringify(metadata)}` : '';
+  return `${Name ? `${Name}: ` : ''}${typeOf(value)}${flags}`;
+}
+
 function formatMethod(method) {
-  const argumentsText = method.arguments.map((argument) => `${argument.Name}: ${typeOf(argument)}`).join(', ');
+  const argumentsText = method.arguments.map(methodField).join(', ');
   const returnsText = method.returns.length > 0
-    ? ` -> ${method.returns.map((value) => `${value.Name ? `${value.Name}: ` : ''}${typeOf(value)}`).join(', ')}`
+    ? ` -> ${method.returns.map(methodField).join(', ')}`
     : '';
   const metadata = Object.keys(method.metadata).length > 0 ? ` ${JSON.stringify(method.metadata)}` : '';
   return `${method.fullName}(${argumentsText})${returnsText}${metadata}`;
@@ -34,6 +40,7 @@ export function formatEntry(entryKind, entry, sourceCommit = 'live') {
   const lines = [`## ${title(entryKind, entry)}`, '', `Kind: ${entryKind}`];
   if (entry.namespace) lines.push(`Namespace: ${entry.namespace}`);
   if (entry.owner) lines.push(`Owner: ${entry.owner}`);
+  if (entry.inherits?.length) lines.push(`Inherits: ${entry.inherits.join(', ')}`);
   if (entry.sourceKind) lines.push(`Source kind: ${entry.sourceKind}`);
   if (entry.documentation?.length) lines.push('', entry.documentation.join('\n\n'));
   lines.push(section('Arguments', entry.arguments), section('Returns', entry.returns), section('Payload', entry.payload), section('Fields', entry.fields), section('Methods', entry.methods?.map(formatMethod).join('\n')), section('Metadata', entry.metadata));
@@ -62,7 +69,11 @@ export function formatResources(result, info) {
 
 export function formatNamespace(namespace, result, info) {
   const names = (entries) => entries.map((entry) => entry.fullName ?? entry.literalName ?? entry.name);
-  return `Dataset: ${datasetLabel(info)}\n\n# ${namespace}\n${section('Systems', names(result.systems))}${section('Functions and methods', names(result.functions))}${section('Events', names(result.events))}${section('Types', names(result.types))}`.trim();
+  const header = `Dataset: ${datasetLabel(info)}\n\n# ${namespace}`;
+  const detail = section('Systems', names(result.systems)) + section('Functions and methods', names(result.functions))
+    + section('Events', names(result.events)) + section('Types', names(result.types));
+  return detail ? `${header}\n${detail}`.trim()
+    : `${header}\n\nNo matching namespace in the selected catalog. Use search_api for partial names.`;
 }
 
 export function formatVersions(entries) {
