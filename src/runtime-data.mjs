@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import * as z from 'zod/v4';
 import { matchesChannel } from './channels.mjs';
 
@@ -7,6 +7,7 @@ const names = z.array(name).max(2000).refine((values) => new Set(values).size ==
 const flag = z.boolean();
 const dimension = z.number().finite().nonnegative();
 const coordinate = z.number().finite();
+const MAX_SNAPSHOT_BYTES = 10 * 1024 * 1024;
 export const runtimeSchema = z.object({
   schemaVersion: z.literal(1),
   source: z.object({
@@ -49,11 +50,36 @@ export const runtimeSchema = z.object({
 
 export async function loadRuntimeData(file) {
   if (!file) return null;
-  if ((await stat(file)).size > 10 * 1024 * 1024) throw new Error('Runtime snapshot exceeds the 10 MB limit');
+  const handle = await open(file);
+  let bytes;
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) throw new Error('Runtime snapshot must be a regular file');
+    const { size } = stats;
+    if (size > MAX_SNAPSHOT_BYTES) throw new Error('Runtime snapshot exceeds the 10 MB limit');
+
+    // Read a bounded amount from the same file inspected above, including a byte to detect growth.
+    bytes = Buffer.allocUnsafe(size + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset !== size) throw new Error('Runtime snapshot size changed while reading; save a stable JSON file and retry');
+    bytes = bytes.subarray(0, offset);
+  } finally {
+    await handle.close();
+  }
+  let decoded;
+  try { decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw new Error('Runtime snapshot must be valid UTF-8'); }
   let data;
-  try { data = JSON.parse(await readFile(file, 'utf8')); } catch { throw new Error('Runtime snapshot must be a data-only JSON file'); }
+  try { data = JSON.parse(decoded); } catch { throw new Error('Runtime snapshot must be a data-only JSON file'); }
   const result = runtimeSchema.safeParse(data);
-  if (!result.success) throw new Error('Runtime snapshot does not match the documented schema; current CVar values and unrequested fields are not accepted');
+  if (!result.success) {
+    const field = result.error.issues[0].path.join('.') || '<root>';
+    throw new Error(`Runtime snapshot does not match the documented schema at ${field}; current CVar values and unrequested fields are not accepted`);
+  }
   return result.data;
 }
 
@@ -71,11 +97,15 @@ export async function loadRuntimeSnapshots(files) {
 
 export function runtimeLookup(snapshot, name, kind, info, locale) {
   if (Array.isArray(snapshot)) {
-    const matches = snapshot.filter(({ source }) => source.channel === (info.channel ?? 'retail')
-      && source.clientVersion === info.clientVersion && (!locale || source.locale === locale));
-    if (matches.length > 1) return { available: false, reason: 'Multiple locales are available for this build. Specify locale to select an observation.' };
-    if (snapshot.length && !matches.length) return { available: false, reason: 'No local snapshot matches the selected channel, build, and requested locale.' };
-    snapshot = matches[0];
+    const candidates = snapshot.filter(({ source }) => source.channel === (info.channel ?? 'retail')
+      && source.clientVersion === info.clientVersion);
+    const selected = locale ? candidates.find(({ source }) => source.locale === locale) : candidates[0];
+    const ambiguous = !locale && candidates.length > 1;
+    if (ambiguous || (snapshot.length && !selected)) return { available: false,
+      availableLocales: candidates.map(({ source }) => source.locale).sort(),
+      reason: ambiguous ? 'Multiple locales are available for this build. Specify locale to select an observation.'
+        : 'No local snapshot matches the selected channel, build, and requested locale.' };
+    snapshot = selected;
   }
   if (!snapshot) return { available: false, reason: 'No local runtime snapshot loaded. Collect selected names with tools/WowApiSnapshot and start with --runtime-data snapshot.json.' };
   if (snapshot.source.channel !== (info.channel ?? 'retail') || snapshot.source.clientVersion !== info.clientVersion || (locale && snapshot.source.locale !== locale)) {

@@ -21,14 +21,22 @@ function collect(request, version = '12.1.0', build = '69587', interfaceVersion 
     C_CVar = { GetCVarInfo = function(name)
       if name == "failed" then error("not available") end
       if name == "missing" then return nil end
+      if name == "badFlag" then return "PRIVATE_CURRENT_SETTING", "1", 0, false, true, false, false end
       return "PRIVATE_CURRENT_SETTING", "1", true, false, true, false, false
     end }
     C_Texture = { GetAtlasInfo = function(name)
       if name == "missing" then return nil end
+      if name == "partial" then return { width=32, height=16 } end
+      if name == "nonfinite" then
+        return { width=math.huge, height=16, leftTexCoord=0, rightTexCoord=0.5,
+          topTexCoord=0.25, bottomTexCoord=1, tilesHorizontally=false, tilesVertically=false }
+      end
       return { width=32, height=16, leftTexCoord=0, rightTexCoord=0.5,
         topTexCoord=0.25, bottomTexCoord=1, tilesHorizontally=false, tilesVertically=true }
     end }
     EXAMPLE_LOCALIZED = "Count %d\n\"quoted\"\\path ä你好"
+    RESTRICTED_LOCALIZED = "SIMULATED_RESTRICTED_TEXT"
+    function issecretvalue(value) return value == RESTRICTED_LOCALIZED end
     local addon = {}
     local function module(...)
     ${source}
@@ -77,6 +85,18 @@ test('empty collector arrays remain arrays and invalid requests fail', () => {
   assert.throws(() => collect('{cvars={name="hidden"}, atlases={}, symbols={}, globalStrings={}}'), /dense array/);
 });
 
+test('collector isolates unusable atlas geometry, malformed CVar flags and restricted text per resource', () => {
+  const json = collect('{cvars={"example","badFlag"}, atlases={"example","partial","nonfinite","missing"}, symbols={}, globalStrings={"EXAMPLE_LOCALIZED","RESTRICTED_LOCALIZED"}}');
+  const snapshot = runtimeSchema.parse(JSON.parse(json));
+  assert.deepEqual(snapshot.records.atlases.map(({ name }) => name), ['example']);
+  assert.deepEqual(snapshot.failed.atlases, ['partial', 'nonfinite']);
+  assert.deepEqual(snapshot.missing.atlases, ['missing']);
+  assert.deepEqual(snapshot.failed.globalStrings, ['RESTRICTED_LOCALIZED']);
+  assert.ok(!json.includes('SIMULATED_RESTRICTED_TEXT'));
+  assert.equal(snapshot.records.cvars[0].defaultValue, '1');
+  assert.deepEqual(snapshot.failed.cvars, ['badFlag']);
+});
+
 test('Forever collector and runtime schema preserve channel identity and reject cross-channel observations', () => {
   const request = '{cvars={"example"}, atlases={}, symbols={}, globalStrings={}}';
   const snapshot = runtimeSchema.parse(JSON.parse(collect(request, '1.60.1', '69913', 16001, 18)));
@@ -115,6 +135,28 @@ test('runtime JSON rejects current values, unrequested entries, duplicates and e
   }
   await writeFile(file, 'return { doNotExecute = true }');
   await assert.rejects(loadRuntimeData(file), /data-only JSON/);
+});
+
+test('snapshot import accepts a UTF-8 BOM and rejects invalid UTF-8 and oversized files', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wow-runtime-encoding-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'snapshot.json');
+  const json = collect('{cvars={}, atlases={}, symbols={}, globalStrings={"EXAMPLE_LOCALIZED"}}');
+  await writeFile(file, '\uFEFF' + json);
+  const snapshot = await loadRuntimeData(file);
+  assert.equal(snapshot.records.globalStrings[0].value, 'Count %d\n"quoted"\\path ä你好');
+  const text = json.indexOf('你好');
+  const invalid = Buffer.concat([Buffer.from(json.slice(0, text)), Buffer.from([0xff]), Buffer.from(json.slice(text + 2))]);
+  await writeFile(file, invalid);
+  await assert.rejects(loadRuntimeData(file), /valid UTF-8/);
+  const limit = 10 * 1024 * 1024;
+  const atLimit = Buffer.alloc(limit, 0x20);
+  atLimit.write(json);
+  await writeFile(file, atLimit);
+  assert.equal((await loadRuntimeData(file)).source.locale, 'enUS');
+  await writeFile(file, Buffer.concat([atLimit, Buffer.from(' ')]));
+  await assert.rejects(loadRuntimeData(file), /10 MB limit/);
+  await assert.rejects(loadRuntimeData(directory), /regular file/);
 });
 
 for (const channel of ['retail', 'forever']) test(`${channel} CLI serves a collector snapshot over MCP with build and locale gates`, async (t) => {
@@ -171,6 +213,8 @@ test('one MCP process routes multiple runtime files by channel/build and require
   files.push(germanFile);
   const localized = await loadRuntimeSnapshots(files);
   assert.match(runtimeLookup(localized, 'example', 'cvar', entries.forever).reason, /Specify locale/);
+  assert.deepEqual(runtimeLookup(localized, 'example', 'cvar', entries.forever).availableLocales, ['deDE', 'enUS']);
+  assert.deepEqual(runtimeLookup(localized, 'example', 'cvar', entries.forever, 'frFR').availableLocales, ['deDE', 'enUS']);
   assert.equal(runtimeLookup(localized, 'example', 'cvar', entries.forever, 'deDE').entry.defaultValue, 'forever-de');
   const client = new Client({ name: 'multi-runtime-integration', version: '1' });
   try {
@@ -187,6 +231,7 @@ test('one MCP process routes multiple runtime files by channel/build and require
     assert.equal(retailResult.entry.defaultValue, 'retail');
     assert.equal(foreverResult.entry.defaultValue, 'forever');
     assert.equal((await query('forever')).available, false);
+    assert.deepEqual((await query('forever')).availableLocales, ['deDE', 'enUS']);
     assert.equal((await query('forever', 'deDE')).entry.defaultValue, 'forever-de');
     assert.equal((await query('forever', 'frFR')).available, false);
   } finally { await client.close(); }

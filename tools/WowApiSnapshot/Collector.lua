@@ -1,5 +1,24 @@
 local _, addon = ...
 local categories = { "cvars", "atlases", "symbols", "globalStrings" }
+local issecretvalue = _G.issecretvalue or function() return false end
+
+local function readable(value)
+  assert(not issecretvalue(value), "Restricted resource observation")
+  return value
+end
+
+local function boolean(value)
+  value = readable(value)
+  assert(type(value) == "boolean", "Invalid resource flag")
+  return value
+end
+
+local function finite(value)
+  value = readable(value)
+  assert(type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge,
+    "Invalid atlas geometry")
+  return value
+end
 
 local function validate(request)
   assert(type(request) == "table", "Invalid snapshot request")
@@ -31,7 +50,7 @@ local function symbol(name)
   local value = _G
   for part in name:gmatch("[^.]+") do
     if type(value) ~= "table" then return nil end
-    value = rawget(value, part)
+    value = readable(rawget(value, part))
   end
   if value ~= nil then return { name = name, type = type(value) } end
 end
@@ -39,23 +58,28 @@ end
 local function cvar(name)
   -- The first return is the current user setting. It is intentionally discarded.
   local _, defaultValue, account, character, locked, secure, readOnly = C_CVar.GetCVarInfo(name)
-  if type(defaultValue) ~= "string" then return nil end
-  return { name = name, defaultValue = defaultValue, isStoredServerAccount = not not account,
-    isStoredServerCharacter = not not character, isLockedFromUser = not not locked,
-    isSecure = not not secure, isReadOnly = not not readOnly }
+  defaultValue = readable(defaultValue)
+  if defaultValue == nil then return nil end
+  assert(type(defaultValue) == "string", "Invalid CVar default")
+  return { name = name, defaultValue = defaultValue, isStoredServerAccount = boolean(account),
+    isStoredServerCharacter = boolean(character), isLockedFromUser = boolean(locked),
+    isSecure = boolean(secure), isReadOnly = boolean(readOnly) }
 end
 
 local function atlas(name)
-  local info = C_Texture.GetAtlasInfo(name)
-  if not info then return nil end
-  return { name = name, width = info.width, height = info.height,
-    leftTexCoord = info.leftTexCoord, rightTexCoord = info.rightTexCoord,
-    topTexCoord = info.topTexCoord, bottomTexCoord = info.bottomTexCoord,
-    tilesHorizontally = not not info.tilesHorizontally, tilesVertically = not not info.tilesVertically }
+  local info = readable(C_Texture.GetAtlasInfo(name))
+  if info == nil then return nil end
+  assert(type(info) == "table", "Invalid atlas information")
+  local width, height = finite(info.width), finite(info.height)
+  assert(width >= 0 and height >= 0, "Invalid atlas dimensions")
+  return { name = name, width = width, height = height,
+    leftTexCoord = finite(info.leftTexCoord), rightTexCoord = finite(info.rightTexCoord),
+    topTexCoord = finite(info.topTexCoord), bottomTexCoord = finite(info.bottomTexCoord),
+    tilesHorizontally = boolean(info.tilesHorizontally), tilesVertically = boolean(info.tilesVertically) }
 end
 
 local function globalString(name)
-  local value = rawget(_G, name)
+  local value = readable(rawget(_G, name))
   if type(value) == "string" then return { name = name, value = value } end
 end
 
