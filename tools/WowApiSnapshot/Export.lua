@@ -4,6 +4,7 @@ SLASH_WOWAPISNAPSHOT1 = "/wowapisnapshot"
 SlashCmdList.WOWAPISNAPSHOT = function()
   local ok, text = pcall(addon.export, addon.request)
   if not ok then
+    if window then window:Hide() end
     print("WoW API Snapshot: export failed. Check Request.lua and the selected client.")
     return
   end
@@ -25,6 +26,10 @@ SlashCmdList.WOWAPISNAPSHOT = function()
     edit:SetScript("OnEscapePressed", function() window:Hide() end)
     scroll:SetScrollChild(edit)
     window.edit = edit
+    window:SetScript("OnHide", function()
+      edit:ClearFocus()
+      edit:SetText("")
+    end)
   end
   window:Show()
   window.edit:SetText(text)
