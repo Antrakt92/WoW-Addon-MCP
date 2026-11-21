@@ -73,6 +73,8 @@ test('empty collector arrays remain arrays and invalid requests fail', () => {
   assert.deepEqual(snapshot.records.atlases, []);
   assert.throws(() => collect('{cvars={"duplicate","duplicate"}, atlases={}, symbols={}, globalStrings={}}'), /duplicate/);
   assert.throws(() => collect('{cvars={}, atlases={}, symbols={}, globalStrings={"playerName"}}'), /uppercase/);
+  assert.throws(() => collect('{cvars={[1]="first",[3]="third"}, atlases={}, symbols={}, globalStrings={}}'), /dense array/);
+  assert.throws(() => collect('{cvars={name="hidden"}, atlases={}, symbols={}, globalStrings={}}'), /dense array/);
 });
 
 test('Forever collector and runtime schema preserve channel identity and reject cross-channel observations', () => {

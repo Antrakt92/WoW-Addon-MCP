@@ -2,9 +2,18 @@ local _, addon = ...
 local categories = { "cvars", "atlases", "symbols", "globalStrings" }
 
 local function validate(request)
+  assert(type(request) == "table", "Invalid snapshot request")
   for _, category in ipairs(categories) do
     local values = request[category]
     assert(type(values) == "table" and #values <= 2000, "Invalid snapshot request")
+    local length = #values
+    local count = 0
+    for index in pairs(values) do
+      assert(type(index) == "number" and index % 1 == 0 and index >= 1 and index <= length,
+        "Snapshot names must be a dense array")
+      count = count + 1
+    end
+    assert(count == length, "Snapshot names must be a dense array")
     local seen = {}
     for _, name in ipairs(values) do
       assert(type(name) == "string" and #name > 0 and #name <= 200
