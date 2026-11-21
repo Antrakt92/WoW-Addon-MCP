@@ -1,7 +1,5 @@
 import { entryIdentity } from './data-store.mjs';
 
-export { entryIdentity };
-
 const SOURCE_FIELDS = new Set(['sourceFile', 'AlternateSourceFiles']);
 
 function stripSource(value) {
@@ -45,7 +43,7 @@ export async function compareApi(catalog, name, fromVersion, toVersion, kind, to
   };
 }
 
-export async function diffVersions(catalog, fromVersion, toVersion, { kind, namespace, change = 'all', limit = 50, toCatalog = catalog } = {}) {
+export async function diffVersions(catalog, fromVersion, toVersion, { kind, namespace, change = 'all', limit = 50, offset = 0, toCatalog = catalog } = {}) {
   const from = catalog.entry(fromVersion);
   const to = toCatalog.entry(toVersion);
   const [fromStore, toStore] = await Promise.all([catalog.store(from.version), toCatalog.store(to.version)]);
@@ -62,6 +60,7 @@ export async function diffVersions(catalog, fromVersion, toVersion, { kind, name
 
   const counts = allChanges.reduce((result, entry) => ({ ...result, [entry.status]: result[entry.status] + 1 }), { added: 0, removed: 0, changed: 0 });
   const matchingChanges = change === 'all' ? allChanges : allChanges.filter((entry) => entry.status === change);
+  const nextOffset = offset + limit < matchingChanges.length ? offset + limit : null;
   return {
     from,
     to,
@@ -69,8 +68,10 @@ export async function diffVersions(catalog, fromVersion, toVersion, { kind, name
     counts,
     total: allChanges.length,
     matching: matchingChanges.length,
-    changes: matchingChanges.slice(0, limit),
-    truncated: matchingChanges.length > limit,
+    offset,
+    nextOffset,
+    changes: matchingChanges.slice(offset, offset + limit),
+    truncated: nextOffset !== null,
   };
 }
 

@@ -38,6 +38,8 @@ const catalogEntry = z.object({
   sourceUrl: z.string(),
 });
 const batchStatus = z.enum(['found', 'short_name_only', 'curated', 'missing']);
+const changeKind = z.enum(['added', 'removed', 'changed']);
+const diffTarget = datasetIdentity.extend({ version: z.string(), build: z.string() });
 const sourceEvidenceSchema = z.object({
   status: z.enum(['source_matches', 'no_source_match', 'source_unavailable', 'source_error']),
   coverage: z.enum(['complete', 'partial', 'unknown']),
@@ -124,7 +126,7 @@ export async function createServer({ manifestPath, channel: restrictedChannel, p
   });
 
   server.registerTool('get_dataset_info', {
-    description: 'Report the resolved WoW dataset for the selected channel, upstream commit, entry counts, and archive coverage.',
+    description: 'Report the selected build and the upstream commit, entry counts and coverage recorded in its catalog manifest. Lookup tools verify the archives they read.',
     annotations: READ_ONLY,
     inputSchema: selection,
   }, async ({ channel, version }) => textResponse(JSON.stringify(selectCatalog(channel).info(version), null, 2)));
@@ -393,18 +395,31 @@ export async function createServer({ manifestPath, channel: restrictedChannel, p
   )));
 
   server.registerTool('diff_versions', {
-    description: 'List APIs added, removed, or structurally changed between two explicitly selected channel/build targets, with optional kind and namespace filters.',
+    description: 'List APIs added, removed, or structurally changed between two explicit targets. Apply optional kind, namespace, and change filters before paging with offset and nextOffset.',
     annotations: READ_ONLY,
     inputSchema: {
       ...comparisonSelection,
       kind: z.enum(KINDS).optional().describe('Optional result category'),
       namespace: z.string().optional().describe('Optional exact C_ namespace'),
-      change: z.enum(['all', 'added', 'removed', 'changed']).default('all').describe('Change type filter'),
+      change: changeKind.or(z.literal('all')).default('all').describe('Change type filter'),
       limit: z.number().int().min(1).max(100).default(50).describe('Maximum listed changes'),
+      offset: z.number().int().min(0).default(0).describe('Start at nextOffset from the previous response with the same targets and filters'),
     },
-  }, async ({ from_channel, from_version, to_channel, to_version, kind, namespace, change, limit }) => textResponse(formatVersionDiff(
-    await diffVersions(selectCatalog(from_channel), from_version, to_version, { kind, namespace, change, limit, toCatalog: selectCatalog(to_channel) }),
-  )));
+    outputSchema: {
+      from: diffTarget, to: diffTarget,
+      counts: z.object({ added: z.number(), removed: z.number(), changed: z.number() }),
+      total: z.number(), matching: z.number(), offset: z.number(), nextOffset: z.number().nullable(),
+      changes: z.array(z.object({ entryKind: z.enum(KINDS), identity: z.string(), status: changeKind })),
+    },
+  }, async ({ from_channel, from_version, to_channel, to_version, kind, namespace, change, limit, offset }) => {
+    const result = await diffVersions(selectCatalog(from_channel), from_version, to_version,
+      { kind, namespace, change, limit, offset, toCatalog: selectCatalog(to_channel) });
+    const target = ({ channel, version, build, clientVersion, commit }) => ({ channel, version, build, clientVersion, commit });
+    const { counts, total, matching, nextOffset, changes } = result;
+    return { ...textResponse(formatVersionDiff(result)), structuredContent: {
+      from: target(result.from), to: target(result.to), counts, total, matching, offset, nextOffset, changes,
+    } };
+  });
 
   server.registerTool('get_api_history', {
     description: 'Show the patches in the selected channel where one exact API appeared, disappeared, or changed structure.',

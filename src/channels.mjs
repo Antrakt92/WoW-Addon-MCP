@@ -17,5 +17,8 @@ export function channelManifest(channel = 'retail') {
 
 export function matchesChannel(version, channel) {
   channelProfile(channel);
-  return channel === 'forever' ? /^1\.60\./.test(version) : Number.parseInt(version, 10) >= 10;
+  const versionParts = typeof version === 'string' && /^(\d+)\.(\d+)\.\d+(?:\.\d+)?$/.exec(version);
+  if (!versionParts) return false;
+  const [, major, minor] = versionParts;
+  return channel === 'forever' ? major === '1' && minor === '60' : Number(major) >= 10;
 }

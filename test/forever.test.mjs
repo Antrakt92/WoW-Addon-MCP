@@ -39,9 +39,10 @@ test('Forever catalogs isolate defaults, history, provenance and curated contrac
   await assert.rejects(updateManifest(file, forever.entry(), 'forever'), /Cannot write forever/);
   assert.equal(await readFile(file, 'utf8'), before);
   const foreverFile = path.join(directory, 'forever.json');
-  await updateManifest(foreverFile, { version: '1.60.1', clientVersion: '1.60.1.69893', build: '69893' }, 'forever');
-  await updateManifest(foreverFile, { version: '1.60.1', clientVersion: '1.60.1.69913', build: '69913' }, 'forever');
-  await updateManifest(foreverFile, { version: '1.60.2', clientVersion: '1.60.2.70000', build: '70000' }, 'forever');
+  const archiveLocation = { commit: 'a'.repeat(40), file: 'snapshot.json.gz' };
+  await updateManifest(foreverFile, { ...archiveLocation, version: '1.60.1', clientVersion: '1.60.1.69893', build: '69893' }, 'forever');
+  await updateManifest(foreverFile, { ...archiveLocation, version: '1.60.1', clientVersion: '1.60.1.69913', build: '69913' }, 'forever');
+  await updateManifest(foreverFile, { ...archiveLocation, version: '1.60.2', clientVersion: '1.60.2.70000', build: '70000' }, 'forever');
   const refreshed = await loadCatalog(foreverFile, { channel: 'forever' });
   assert.deepEqual(refreshed.listVersions().map((e) => e.version), ['1.60.1', '1.60.2']);
   assert.equal(refreshed.resolve(), '1.60.2');

@@ -113,6 +113,8 @@ For example, call `lookup_api` with either of these argument objects:
 
 Across games, added/removed means present only in the target/source catalog; it does not establish a chronological API change. `get_api_history` requires one `channel` and accepts optional `from_version` and `to_version` bounds. It never mixes game histories.
 
+For a large `diff_versions` result, repeat the same targets and filters with the returned `nextOffset` as `offset`. The structured response reports total changes, matching changes, and the current page. A null `nextOffset` marks the final page.
+
 For Codex projects, an `AGENTS.md` instruction can make the intended targets explicit:
 
 > This addon targets Retail and Forever. Discover available builds with `list_versions`, then specify channel and version on every build-specific WoW MCP call. Check shared APIs against both target builds and preserve their restriction metadata. Do not assume the same API behaves identically across games.
@@ -161,6 +163,8 @@ npx -y wow-addon-api-mcp@latest --runtime-data /absolute/path/retail.json --runt
 
 Explicit file arguments override the environment variable. `lookup_runtime_resource` requires `channel` and `version` with an exact catalog build match. Pass `locale` when the answer must match a particular locale; it is required when multiple locales match the selected build. Duplicate snapshots for the same channel/build/locale are rejected. Results distinguish unrequested, missing, failed, and found names. They are observations from that client session, not guaranteed contracts or permission to redistribute captured content. No Ketho or Wago runtime dumps are bundled. The collector core is tested offline; its UI and game-specific behavior still require [in-client validation](VALIDATION.md).
 
+The CLI inventory commands `--dataset-info` and `--list-versions` can inspect catalogs while a configured observation file is missing or invalid. Starting the MCP server still validates its observation files.
+
 For a Forever observation, set `channel: "forever"` on the tool call. The collector identifies supported `1.60.x` builds separately from Retail, and imports require the selected channel as well as the exact build and requested locale. Curated engine contracts and migration guidance remain limited to their reviewed Retail build; they are not extrapolated to Forever.
 
 For an old-addon migration, a useful LLM workflow is:
@@ -196,6 +200,8 @@ The official Blizzard documentation tables mirrored by Gethe are the API authori
 
 ## Local development
 
+The commands in this section run from a source checkout.
+
 Run the local checkout with `node src/cli.mjs` after `npm ci`. In your MCP
 client, set the command to the Node executable and pass the absolute path to
 `src/cli.mjs` as its argument.
@@ -227,7 +233,9 @@ node scripts/build-dataset.mjs --source /path/to/wow-ui-source
 Use a clean Git checkout for source extraction. A supplied `--client-version`
 must agree with the source revision. Builds acquire a lock for the target
 manifest. After a forced interruption, verify the process has stopped,
-remove the stale `.lock` file, and rebuild the catalog before using it.
+then remove its stale `<manifest>.lock` and any `<manifest>.tmp` or
+`<archive>.tmp` files created by that build. Rebuild the catalog from the
+pinned source before using it.
 
 Forever uses `.cache/wow-ui-forever` and a separate manifest and archives under `data/forever/`. Its known ambiguous include requires explicit partial-resource extraction:
 

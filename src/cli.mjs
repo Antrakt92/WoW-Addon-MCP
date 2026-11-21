@@ -28,10 +28,11 @@ if (options.help) {
 } else if (options.version) {
   console.log(packageJson.version);
 } else {
+  const inventoryMode = options['dataset-info'] || options['list-versions'];
   const { server, catalog, catalogs } = await createServer({
     packageVersion: packageJson.version,
     channel: options.channel,
-    runtimeDataPath: options['runtime-data'],
+    runtimeDataPath: inventoryMode ? [] : options['runtime-data'],
   });
   if (options['dataset-info']) {
     console.log(JSON.stringify(catalog ? catalog.info('latest') : { channels: [...catalogs.values()].map((entry) => entry.info('latest')) }, null, 2));

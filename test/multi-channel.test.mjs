@@ -179,19 +179,37 @@ test('default MCP exposes both channels with required per-call targets and no im
       const { to_channel, ...incomplete } = target;
       assert.equal((await client.callTool({ name, arguments: { ...args, ...incomplete } })).isError, true);
     }
+
+    const firstDiff = await client.callTool({ name: 'diff_versions', arguments: { ...target, change: 'added', limit: 1 } });
+    const secondDiff = await client.callTool({ name: 'diff_versions', arguments: { ...target, change: 'added', limit: 1, offset: 1 } });
+    for (const response of [firstDiff, secondDiff]) {
+      assert.ok(!response.isError, response.content[0]?.text);
+      assert.match(response.content[0].text, /Showing 1 of \d+ matching added entries/);
+      assert.equal(response.structuredContent.changes.length, 1);
+    }
+    assert.equal(firstDiff.structuredContent.nextOffset, 1);
+    assert.equal(secondDiff.structuredContent.offset, 1);
+    assert.notEqual(firstDiff.structuredContent.changes[0].identity, secondDiff.structuredContent.changes[0].identity);
+    const endDiff = await client.callTool({ name: 'diff_versions', arguments: {
+      ...target, change: 'added', offset: firstDiff.structuredContent.matching,
+    } });
+    assert.ok(!endDiff.isError, endDiff.content[0]?.text);
+    assert.deepEqual(endDiff.structuredContent.changes, []);
+    assert.equal(endDiff.structuredContent.nextOffset, null);
+    assert.equal((await client.callTool({ name: 'diff_versions', arguments: { ...target, offset: -1 } })).isError, true);
   } finally { await client.close(); }
 });
 
 test('unavailable or broken FrameXML archives preserve independent API lookup results', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wow-mcp-source-evidence-'));
   const manifestPath = path.join(root, 'manifest.json');
-  const { resourceFile: _, ...entry } = retail.entry();
+  const { resourceFile: _, resourceCounts: _counts, resourceCoverage: _coverage, ...entry } = retail.entry();
   const file = fileURLToPath(retail.datasetPath(entry));
   try {
     for (const [resourceFile, status] of [[undefined, 'source_unavailable'], ['absent.json.gz', 'source_error']]) {
       await writeFile(manifestPath, JSON.stringify({
         schemaVersion: 1, channel: 'retail', default: entry.version,
-        versions: [{ ...entry, resourceFile, file }],
+        versions: [{ ...entry, resourceFile, file, commitDate: resourceFile ? 'invalid-date' : undefined }],
       }));
       const { server } = await createServer({ manifestPath, runtimeDataPath: [] });
       const client = new Client({ name: 'source-evidence-test', version: '1' });
@@ -199,6 +217,9 @@ test('unavailable or broken FrameXML archives preserve independent API lookup re
       try {
         await server.connect(serverTransport);
         await client.connect(clientTransport);
+        const versions = await client.callTool({ name: 'list_versions' });
+        assert.ok(!versions.isError, versions.content[0]?.text);
+        assert.match(versions.content[0].text, /date unavailable/);
         const result = await client.callTool({ name: 'lookup_apis', arguments: {
           targets: [{ channel: 'retail', version: entry.clientVersion }], names: ['UnitStat', 'GetQuestLogQuestText'],
         } });
@@ -287,6 +308,23 @@ test('CLI handles help and rejects malformed options without opening stdio', () 
     assert.equal(result.stdout, '');
     assert.ok(result.stderr);
   }
+});
+
+test('CLI can inspect catalog builds while configured runtime data is unavailable', () => {
+  const run = (...args) => spawnSync(process.execPath, ['src/cli.mjs', ...args], {
+    encoding: 'utf8', timeout: 5_000,
+    env: { ...process.env, WOW_API_RUNTIME_DATA: 'missing-runtime-inventory-fixture.json' },
+  });
+  const info = run('--dataset-info');
+  assert.equal(info.status, 0, info.stderr);
+  assert.equal(JSON.parse(info.stdout).channels.length, 2);
+  const versions = run('--list-versions', '--channel', 'forever');
+  assert.equal(versions.status, 0, versions.stderr);
+  assert.match(versions.stdout, /160|1\.60/);
+  const runtime = run();
+  assert.equal(runtime.status, 1);
+  assert.equal(runtime.stdout, '');
+  assert.match(runtime.stderr, /missing-runtime-inventory-fixture\.json/);
 });
 
 test('cross-channel comparisons preserve direction, exact identities, and target restrictions', async () => {

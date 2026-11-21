@@ -60,5 +60,14 @@ for (const channel of ['retail', 'forever']) {
     const system = current.lookup('C_CurrencyInfo', 'system')[0].entry;
     assert.strictEqual(current.lookup(`${system.kind}:${system.namespace}:${system.name}`, 'system')[0]?.entry, system);
     assert.equal(current.lookup(' Frame : SetScript ', 'function')[0]?.entry.fullName, 'ScriptRegion:SetScript');
+    for (const [name, kind] of [
+      ['Enum.SpellBookSpellBank', 'enumeration'],
+      ['C_CurrencyInfo.ACCOUNT_CHARACTER_CURRENCY_DATA_RECEIVED', 'event'],
+      ['Frame:SetScript', 'function'],
+    ]) {
+      const [match] = current.search(name, { kind });
+      assert.equal(match?.rank, 0, name);
+      assert.strictEqual(match.entry, current.lookup(name, kind)[0].entry);
+    }
   });
 }

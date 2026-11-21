@@ -4,9 +4,8 @@ function title(entryKind, entry) {
   return entry.fullName ?? entry.literalName ?? entry.name ?? entryKind;
 }
 
-export function datasetLabel(info) {
-  const entry = info.selected ?? info;
-  return `${channelProfile(entry.channel ?? info.channel).label} ${entry.version} build ${entry.build ?? 'unknown'} (${entry.clientVersion}; commit ${entry.commit})`;
+export function datasetLabel(entry) {
+  return `${channelProfile(entry.channel).label} ${entry.version} build ${entry.build} (${entry.clientVersion}; commit ${entry.commit})`;
 }
 
 function section(label, value) {
@@ -36,7 +35,7 @@ function formatMethod(method) {
   return `${method.fullName}(${argumentsText})${returnsText}${metadata}`;
 }
 
-export function formatEntry(entryKind, entry, sourceCommit = 'live') {
+export function formatEntry(entryKind, entry, sourceCommit) {
   const lines = [`## ${title(entryKind, entry)}`, '', `Kind: ${entryKind}`];
   if (entry.namespace) lines.push(`Namespace: ${entry.namespace}`);
   if (entry.owner) lines.push(`Owner: ${entry.owner}`);
@@ -49,11 +48,11 @@ export function formatEntry(entryKind, entry, sourceCommit = 'live') {
 }
 
 export function formatMatches(matches, info) {
-  const header = info ? `Dataset: ${datasetLabel(info)}\n\n` : '';
+  const header = `Dataset: ${datasetLabel(info)}\n\n`;
   if (matches.length === 0) return `${header}No matching WoW API entries found.`;
   const note = matches.every((match) => match.matchType === 'short-name')
     ? 'Only short-name matches were found. These qualified APIs do not establish that a global with the requested name exists. Use lookup_resource for Blizzard source references.\n\n' : '';
-  return `${header}${note}${matches.map(({ entryKind, entry }) => formatEntry(entryKind, entry, info?.commit ?? info?.selected?.commit)).join('\n\n---\n\n')}`;
+  return `${header}${note}${matches.map(({ entryKind, entry }) => formatEntry(entryKind, entry, info.commit)).join('\n\n---\n\n')}`;
 }
 
 export function withResourceLink(entry, commit) {
@@ -95,9 +94,11 @@ export function formatNamespace(namespace, result, info) {
 }
 
 export function formatVersions(entries) {
-  return [`# Supported ${entries[0]?.channel ?? 'retail'} versions (${entries.length})`, '', ...entries.map((entry) => (
-    `- ${entry.version}${entry.default ? ' (latest)' : ''}: client ${entry.clientVersion}, build ${entry.build}, ${entry.commitDate.slice(0, 10)}, commit ${entry.commit}`
-  ))].join('\n');
+  return [`# Supported ${entries[0]?.channel ?? 'retail'} versions (${entries.length})`, '', ...entries.map((entry) => {
+    const date = typeof entry.commitDate === 'string' && /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(entry.commitDate)
+      && Number.isFinite(Date.parse(entry.commitDate)) ? entry.commitDate.slice(0, 10) : 'date unavailable';
+    return `- ${entry.version}${entry.default ? ' (latest)' : ''}: client ${entry.clientVersion}, build ${entry.build}, ${date}, commit ${entry.commit}`;
+  })].join('\n');
 }
 
 export function formatComparison(result) {
@@ -117,13 +118,15 @@ export function formatVersionDiff(result) {
     `# Version diff: ${datasetLabel(result.from)} → ${datasetLabel(result.to)}`,
     '',
     'Changes describe generated documentation coverage; missing entries do not independently establish runtime removal.',
+    ...(result.from.channel !== result.to.channel
+      ? ['Cross-channel comparison: added/removed means present only in the target/source catalog, not a chronological API change.']
+      : []),
     `Changes: ${result.total} (added ${result.counts.added}, removed ${result.counts.removed}, changed ${result.counts.changed})`,
+    `Showing ${result.changes.length} of ${result.matching} matching ${result.filters.change === 'all' ? '' : result.filters.change + ' '}entries (offset ${result.offset}).`,
     '',
     ...result.changes.map((entry) => `- [${entry.status}] ${entry.entryKind}: ${entry.identity}`),
   ];
-  if (result.filters.change !== 'all') lines.splice(4, 0, `Showing ${result.matching} ${result.filters.change} entries.`, '');
-  if (result.from.channel !== result.to.channel) lines.splice(3, 0, 'Cross-channel comparison: added/removed means present only in the target/source catalog, not a chronological API change.');
-  if (result.truncated) lines.push('', `Results truncated; increase limit up to 100 (matching ${result.matching}).`);
+  if (result.nextOffset !== null) lines.push('', `Next page: offset ${result.nextOffset} with the same targets and filters.`);
   return lines.join('\n');
 }
 
