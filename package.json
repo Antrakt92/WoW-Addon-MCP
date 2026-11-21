@@ -17,6 +17,9 @@
     "data/curated/",
     "src/",
     "tools/WowApiSnapshot/",
+    "docs/",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
